@@ -58,6 +58,9 @@ const (
 )
 
 type LogEntry struct {
+	Index   int
+	Term    int
+	Command interface{}
 }
 
 // A Go object implementing a single Raft peer.
@@ -66,6 +69,7 @@ type Raft struct {
 	peers       []*labrpc.ClientEnd // RPC end points of all peers
 	persister   *Persister          // Object to hold this peer's persisted state
 	me          int                 // this peer's index into peers[]
+	applyCh     chan ApplyMsg       // apply channel
 	dead        int32               // set by Kill()
 	sstate      ServerState
 	leaderAlive chan int
@@ -77,15 +81,15 @@ type Raft struct {
 	// Persistent state
 	currentTerm int
 	votedFor    int
-	log         []*LogEntry
+	log         []LogEntry
 
 	// Volatile state
 	commitIndex int
 	lastApplied int
 
 	// Leader state
-	nextIndex  []int
-	matchIndex []int
+	nextIndex  []int // index of the next log entry to send
+	matchIndex []int // index of highest log entry known to be replicated
 }
 
 // return currentTerm and whether this server
@@ -221,7 +225,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // example AppendEntries RPC arguments structure.
 // field names must start with capital letters!
 type AppendEntriesArgs struct {
-	// Your data here (2A, 2B).
 	Term         int
 	LeaderId     int
 	PrevLogIndex int
@@ -233,9 +236,10 @@ type AppendEntriesArgs struct {
 // example AppendEntries RPC reply structure.
 // field names must start with capital letters!
 type AppendEntriesReply struct {
-	// Your data here (2A).
-	Term    int
-	Success bool
+	Term         int
+	Success      bool
+	PrevLogIndex int
+	PrevLogTerm  int
 }
 
 // example AppendEntries RPC handler.
@@ -248,10 +252,24 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		return
 	}
-	// update log
+
 	rf.sstate = Follower
 	rf.currentTerm = args.Term
 	reply.Success = true
+	if len(args.Entries) > 0 {
+		// update log
+		i := len(rf.log) - 1
+		lastIndex := rf.log[i].Index
+		if lastIndex > args.PrevLogIndex {
+			i -= lastIndex - args.PrevLogIndex
+			rf.log = rf.log[:i+1]
+			lastIndex = rf.log[i].Index
+		}
+		if lastIndex < args.PrevLogIndex {
+
+		}
+
+	}
 
 	// restart timer
 	rf.leaderAlive <- 1
@@ -275,11 +293,19 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	index := rf.nextIndex[rf.me]
+	term := rf.currentTerm
+	isLeader := (rf.sstate == Leader)
 
 	// Your code here (2B).
+	entry := LogEntry{}
+	entry.Index = index
+	entry.Term = term
+	entry.Command = command
+	rf.log = append(rf.log, entry)
+	rf.nextIndex[rf.me] += 1
 
 	return index, term, isLeader
 }
@@ -480,6 +506,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.applyCh = applyCh
 
 	rf.sstate = Follower
 	rf.leaderAlive = make(chan int)
