@@ -18,14 +18,15 @@ package raft
 //
 
 import (
-	//	"bytes"
+	"bytes"
+	"log"
 
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	//	"6.5840/labgob"
+	"6.5840/labgob"
 	// "fmt"
 
 	"6.5840/labrpc"
@@ -118,13 +119,14 @@ func (rf *Raft) GetState() (int, bool) {
 // (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
 	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// raftstate := w.Bytes()
-	// rf.persister.Save(raftstate, nil)
+	// assume already has the rf lock
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
 
 // restore previously persisted state.
@@ -134,23 +136,27 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 	// Your code here (2C).
 	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var rflog []LogEntry
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&rflog) != nil {
+		//   error...
+		log.Fatalf("missing persistent")
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = rflog
+	}
 }
 
 func (rf *Raft) applyCommited() {
 	// apply commited logs
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
 	if len(rf.log) > 0 {
 		offset := rf.log[0].Index
 		for i := rf.lastApplied - offset + 1; rf.lastApplied < rf.commitIndex; i++ {
@@ -214,12 +220,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			// update timer
 			rf.leaderAlive <- 1
 			// fmt.Printf("peer %d voted for %d in term %d\n", rf.me, args.CandidateId, args.Term)
+			rf.persist()
 			return
 		}
 	}
 	reply.VoteGranted = false
 	reply.Term = rf.currentTerm
 	// fmt.Printf("peer %d rejected %d in term %d\n", rf.me, args.CandidateId, args.Term)
+	rf.persist()
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -281,6 +289,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		rf.persist()
 		return
 	}
 
@@ -330,7 +339,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				rf.commitIndex = rf.log[len(rf.log)-1].Index
 			}
 			// apply commited logs
-			go rf.applyCommited()
+			rf.applyCommited()
 		}
 	} else {
 		reply.Success = false
@@ -346,6 +355,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// restart timer
 	rf.leaderAlive <- 1
+	rf.persist()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -385,6 +395,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.log = append(rf.log, entry)
 		rf.nextIndex[rf.me] += 1
 		rf.matchIndex[rf.me] += 1
+		rf.persist()
 	}
 
 	return index, term, isLeader
@@ -417,7 +428,7 @@ func (rf *Raft) ticker() {
 		go func() {
 			// pause for a random amount of time between 1300 and 1600
 			// milliseconds.
-			ms := 500 + (rand.Int63() % 300)
+			ms := 55 + (rand.Int63() % 300)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 			newElection <- 1
 		}()
@@ -447,6 +458,7 @@ func (rf *Raft) startElection() bool {
 			args.LastLogIndex = rf.log[len(rf.log)-1].Index
 			args.LastLogTerm = rf.log[len(rf.log)-1].Term
 		}
+		rf.persist()
 		rf.mu.Unlock()
 
 		voteCollected := 1
@@ -476,7 +488,7 @@ func (rf *Raft) startElection() bool {
 		go func() {
 			// pause for a random amount of time between 1300 and 1600
 			// milliseconds.
-			ms := 500 + (rand.Int63() % 300)
+			ms := 55 + (rand.Int63() % 300)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 			timeout <- 1
 		}()
@@ -496,6 +508,7 @@ func (rf *Raft) startElection() bool {
 					rf.mu.Lock()
 					rf.currentTerm = c
 					rf.sstate = Follower
+					rf.persist()
 					rf.mu.Unlock()
 					return false
 				}
@@ -518,15 +531,15 @@ func (rf *Raft) leaderOp() {
 	rf.sstate = Leader
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
-	nextIndex := 1
+	termStartIndex := 1
 	if len(rf.log) > 0 {
-		nextIndex = rf.log[len(rf.log)-1].Index + 1
+		termStartIndex = rf.log[len(rf.log)-1].Index + 1
 	}
 	for i := range rf.peers {
-		rf.nextIndex[i] = nextIndex
+		rf.nextIndex[i] = termStartIndex
 		// rf.matchIndex[i] = 0
 	}
-	rf.matchIndex[rf.me] = nextIndex - 1
+	rf.matchIndex[rf.me] = termStartIndex - 1
 	rf.mu.Unlock()
 	sortedMatchPeers := make([]int, len(rf.peers))
 	for i := range sortedMatchPeers {
@@ -594,7 +607,6 @@ func (rf *Raft) leaderOp() {
 									sortedMatchPeers[id], sortedMatchPeers[id+1] = sortedMatchPeers[id+1], sortedMatchPeers[id]
 								}
 							}
-
 							rf.mu.Unlock()
 						}
 					}
@@ -615,6 +627,7 @@ func (rf *Raft) leaderOp() {
 			rf.mu.Lock()
 			rf.currentTerm = c
 			rf.sstate = Follower
+			rf.persist()
 			rf.mu.Unlock()
 			go rf.ticker()
 			// fmt.Printf("peer %d giving up leader, found new term %d", rf.me, c)
@@ -634,11 +647,12 @@ func (rf *Raft) leaderOp() {
 		rf.mu.Lock()
 		// find the n/2+1's largest number
 		n := rf.matchIndex[sortedMatchPeers[len(rf.peers)/2]]
-		if n > rf.commitIndex {
+		if n > rf.commitIndex && n >= termStartIndex {
 			rf.commitIndex = n
+			// apply commited logs
+			// go rf.applyCommited()
+			rf.applyCommited()
 		}
-		// apply commited logs
-		go rf.applyCommited()
 		rf.mu.Unlock()
 	}
 }
