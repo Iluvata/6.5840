@@ -168,7 +168,7 @@ func (rf *Raft) applyCommited() {
 			msg.CommandValid = true
 			msg.Command = rf.log[i].Command
 			msg.CommandIndex = rf.lastApplied
-			log.Printf("[ApplyCommand]\t%d applied %v, with last applied %d, term %d, commitId %d\n", rf.me, msg.Command, rf.lastApplied, rf.log[i].Term, rf.commitIndex)
+			// log.Printf("[ApplyCommand]\t%d applied %v, with last applied %d, term %d, commitId %d\n", rf.me, msg.Command, rf.lastApplied, rf.log[i].Term, rf.commitIndex)
 			rf.applyCh <- msg
 		}
 	}
@@ -220,8 +220,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.sstate = Follower
 			reply.VoteGranted = true
 			// update timer
-			log.Printf("[VoteGranted]\t%d voted for %d in term %d, with last log index %d, log term %d; %d's last log index %d, log term %d\n",
-				rf.me, args.CandidateId, args.Term, lastLogIndex, lastLogTerm, args.CandidateId, args.LastLogIndex, args.LastLogTerm)
+			// log.Printf("[VoteGranted]\t%d voted for %d in term %d, with last log index %d, log term %d; %d's last log index %d, log term %d\n",
+			// rf.me, args.CandidateId, args.Term, lastLogIndex, lastLogTerm, args.CandidateId, args.LastLogIndex, args.LastLogTerm)
 			rf.persist()
 			rf.mu.Unlock()
 			rf.leaderAlive <- 1
@@ -230,8 +230,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	reply.VoteGranted = false
 	reply.Term = rf.currentTerm
-	log.Printf("[VoteRej]\t%d rejected %d in term %d, with last log index %d, log term %d; %d's last log index %d, log term %d\n",
-		rf.me, args.CandidateId, args.Term, lastLogIndex, lastLogTerm, args.CandidateId, args.LastLogIndex, args.LastLogTerm)
+	// log.Printf("[VoteRej]\t%d rejected %d in term %d, with last log index %d, log term %d; %d's last log index %d, log term %d\n",
+	// rf.me, args.CandidateId, args.Term, lastLogIndex, lastLogTerm, args.CandidateId, args.LastLogIndex, args.LastLogTerm)
 	rf.mu.Unlock()
 }
 
@@ -310,8 +310,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		lastIndex = rf.log[i].Index
 		lastTerm = rf.log[i].Term
 	}
-	log.Printf("[AppendEntries]\t%d received AppendEntries from %d in term %d, with its lastId %d, lastTerm %d; leader's PrevId %d, PrevTerm %d",
-		rf.me, args.LeaderId, rf.currentTerm, lastIndex, lastTerm, args.PrevLogIndex, args.PrevLogTerm)
+	// log.Printf("[AppendEntries]\t%d received AppendEntries from %d in term %d, with its lastId %d, lastTerm %d; leader's PrevId %d, PrevTerm %d",
+	// rf.me, args.LeaderId, rf.currentTerm, lastIndex, lastTerm, args.PrevLogIndex, args.PrevLogTerm)
 	if lastIndex > args.PrevLogIndex {
 		// lastIndex != 0
 		i -= lastIndex - args.PrevLogIndex
@@ -414,7 +414,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (2B).
 	if isLeader {
-		log.Printf("[NewCommand]\t%d received cmd %v\n", rf.me, command)
+		// log.Printf("[NewCommand]\t%d received cmd %v\n", rf.me, command)
 		entry := LogEntry{}
 		entry.Index = index
 		entry.Term = term
@@ -470,7 +470,7 @@ func (rf *Raft) ticker() {
 			}
 		}
 	}
-	log.Printf("[KilledFromTicker] %d killed", rf.me)
+	// log.Printf("[KilledFromTicker] %d killed", rf.me)
 }
 
 func (rf *Raft) startElection() bool {
@@ -555,13 +555,13 @@ func (rf *Raft) startElection() bool {
 			}
 		}
 	}
-	log.Printf("[KilledFromCand] %d killed", rf.me)
+	// log.Printf("[KilledFromCand] %d killed", rf.me)
 	return false
 }
 
 func (rf *Raft) leaderOp() {
 	rf.mu.Lock()
-	log.Printf("[NewLeader]\t%d become leader in term %d\n", rf.me, rf.currentTerm)
+	// log.Printf("[NewLeader]\t%d become leader in term %d\n", rf.me, rf.currentTerm)
 	rf.sstate = Leader
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
@@ -585,7 +585,7 @@ func (rf *Raft) leaderOp() {
 	}
 	sortedMatchPeers[0], sortedMatchPeers[rf.me] = rf.me, 0
 	for !rf.killed() {
-		log.Printf("[LeaderHeartBeat] %d", rf.me)
+		// log.Printf("[LeaderHeartBeat] %d", rf.me)
 		timeout := make(chan int)
 		appCond := make(chan int)
 		quit := make(chan int)
@@ -674,13 +674,13 @@ func (rf *Raft) leaderOp() {
 				rf.persist()
 			}
 			rf.mu.Unlock()
-			log.Printf("[ChangeLeader]\t%d giving up leader, found new term %d", rf.me, c)
+			// log.Printf("[ChangeLeader]\t%d giving up leader, found new term %d", rf.me, c)
 			go rf.ticker()
 			return
 		case <-rf.leaderAlive:
 			// already set to follower
 			close(quit)
-			log.Printf("[ChangeLeader]\t%d giving up leader, found new leader alive", rf.me)
+			// log.Printf("[ChangeLeader]\t%d giving up leader, found new leader alive", rf.me)
 			go rf.ticker()
 			return
 		case <-timeout:
@@ -691,7 +691,7 @@ func (rf *Raft) leaderOp() {
 		if rf.currentTerm > leaderTerm {
 			// has leader alive
 			rf.mu.Unlock()
-			log.Printf("[LeaderTermChanged] %d: unexpected change of term", rf.me)
+			// log.Printf("[LeaderTermChanged] %d: unexpected change of term", rf.me)
 			go rf.ticker()
 			return
 		}
@@ -704,7 +704,7 @@ func (rf *Raft) leaderOp() {
 		}
 		rf.mu.Unlock()
 	}
-	log.Printf("[LeaderKilled] %d killed", rf.me)
+	// log.Printf("[LeaderKilled] %d killed", rf.me)
 }
 
 // the service or tester wants to create a Raft server. the ports
