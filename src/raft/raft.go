@@ -587,7 +587,7 @@ func (rf *Raft) ticker() {
 		// Check if a leader election should be started.
 		newElection := make(chan int)
 		go func() {
-			// pause for a random amount of time between 1300 and 1600
+			// pause for a random amount of time between 100 and 400
 			// milliseconds.
 			ms := 100 + (rand.Int63() % 300)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
@@ -651,9 +651,9 @@ func (rf *Raft) startElection() bool {
 			}
 		}
 		go func() {
-			// pause for a random amount of time between 1300 and 1600
+			// pause for a random amount of time between 150 and 450
 			// milliseconds.
-			ms := 100 + (rand.Int63() % 300)
+			ms := 150 + (rand.Int63() % 300)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 			timeout <- 1
 		}()
@@ -849,7 +849,7 @@ func (rf *Raft) leaderOp() {
 			close(quit)
 			rf.mu.Lock()
 			if c > rf.currentTerm {
-				rf.currentTerm = c + 1
+				rf.currentTerm = c
 				rf.sstate = Follower
 				rf.votedFor = -1
 				rf.persist()
