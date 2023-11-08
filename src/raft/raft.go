@@ -43,6 +43,7 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+	CommandTerm  int
 
 	// For 2D:
 	SnapshotValid bool
@@ -204,7 +205,8 @@ func (rf *Raft) applyCommited() {
 			msg := ApplyMsg{}
 			msg.CommandValid = true
 			msg.Command = rf.log[i].Command
-			msg.CommandIndex = rf.lastApplied
+			msg.CommandIndex = rf.log[i].Index
+			msg.CommandTerm = rf.log[i].Term
 			// log.Printf("[ApplyCommand]\t%d applied %v, with last applied %d, term %d, commitId %d\n", rf.me, msg.Command, rf.lastApplied, rf.log[i].Term, rf.commitIndex)
 			select {
 			case rf.applyCh <- msg:

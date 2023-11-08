@@ -1,15 +1,16 @@
 package kvraft
 
 import (
-	"6.5840/labgob"
-	"6.5840/labrpc"
-	"6.5840/raft"
 	"log"
 	"sync"
 	"sync/atomic"
+
+	"6.5840/labgob"
+	"6.5840/labrpc"
+	"6.5840/raft"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -18,11 +19,20 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Cmd   string // "Get" or "Put" or "Append"
+	Key   string
+	Value string
+}
+
+type OpRes struct {
+	index     int
+	term      int
+	replyCond chan string
+	err       Err
 }
 
 type KVServer struct {
@@ -35,15 +45,58 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	resQueue []*OpRes
+	KVdata   map[string]string
 }
-
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	op := Op{}
+	op.Cmd = "Get"
+	op.Key = args.Key
+	kv.mu.Lock()
+	index, term, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		kv.mu.Unlock()
+		return
+	}
+	opReply := OpRes{}
+	opReply.index = index
+	opReply.term = term
+	opReply.replyCond = make(chan string)
+	kv.resQueue = append(kv.resQueue, &opReply)
+	DPrintf("[ServerGet]\t%d received Get id %d, term %d; for key %v", index, term, kv.me, args.Key)
+	kv.mu.Unlock()
+
+	reply.Value = <-opReply.replyCond
+	reply.Err = opReply.err
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	op := Op{}
+	op.Cmd = args.Op
+	op.Key = args.Key
+	op.Value = args.Value
+	kv.mu.Lock()
+	index, term, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		kv.mu.Unlock()
+		return
+	}
+	opReply := OpRes{}
+	opReply.index = index
+	opReply.term = term
+	opReply.replyCond = make(chan string)
+	kv.resQueue = append(kv.resQueue, &opReply)
+	DPrintf("[ServerPutAppend]\t%d received PutAppend id %d, term %d; for %v key %v, value %v",
+		kv.me, index, term, args.Op, args.Key, args.Value)
+	kv.mu.Unlock()
+
+	<-opReply.replyCond
+	reply.Err = opReply.err
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -63,6 +116,46 @@ func (kv *KVServer) Kill() {
 func (kv *KVServer) killed() bool {
 	z := atomic.LoadInt32(&kv.dead)
 	return z == 1
+}
+
+func replyRes(reply *OpRes, res string) {
+	reply.replyCond <- res
+}
+
+func (kv *KVServer) coordinator() {
+	for !kv.killed() {
+		msg := <-kv.applyCh
+		if msg.SnapshotValid {
+			// TODO
+		}
+		if msg.CommandValid {
+			kv.mu.Lock()
+			DPrintf("[MsgApply]\t%d applying id %d, term %d", kv.me, msg.CommandIndex, msg.CommandTerm)
+			op := msg.Command.(Op)
+			value, ok := "", false
+			if op.Cmd == "Get" {
+				value, ok = kv.KVdata[op.Key]
+			} else if op.Cmd == "Put" {
+				kv.KVdata[op.Key] = op.Value
+			} else if op.Cmd == "Append" {
+				kv.KVdata[op.Key] += op.Value
+			}
+			for len(kv.resQueue) > 0 {
+				kv.resQueue[0].err = ErrTryAgain
+				if msg.CommandIndex < kv.resQueue[0].index {
+					break
+				} else if msg.CommandIndex == kv.resQueue[0].index && msg.CommandTerm == kv.resQueue[0].term {
+					kv.resQueue[0].err = OK
+					if op.Cmd == "Get" && !ok {
+						kv.resQueue[0].err = ErrNoKey
+					}
+				}
+				go replyRes(kv.resQueue[0], value)
+				kv.resQueue = kv.resQueue[1:]
+			}
+			kv.mu.Unlock()
+		}
+	}
 }
 
 // servers[] contains the ports of the set of
@@ -90,8 +183,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.KVdata = make(map[string]string)
 
 	// You may need initialization code here.
+	go kv.coordinator()
 
 	return kv
 }
