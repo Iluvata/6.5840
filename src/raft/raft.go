@@ -76,6 +76,7 @@ type Raft struct {
 	dead        int32               // set by Kill()
 	sstate      ServerState
 	leaderAlive chan int
+	newLog      *sync.Cond
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -168,19 +169,7 @@ func (rf *Raft) applyCommited() {
 	// assume caller holding the lock
 	// rf.mu.Lock()
 	// defer rf.mu.Unlock()
-	timeout := make(chan int)
-	go func() {
-		ms := 1
-		time.Sleep(time.Duration(ms) * time.Millisecond)
-		timeout <- 1
-	}()
 	if rf.lastApplied < rf.lastIncludedIndex {
-		timeout := make(chan int)
-		go func() {
-			ms := 1
-			time.Sleep(time.Duration(ms) * time.Millisecond)
-			timeout <- 1
-		}()
 		msg := ApplyMsg{}
 		msg.SnapshotValid = true
 		msg.Snapshot = rf.snapshot
@@ -190,7 +179,7 @@ func (rf *Raft) applyCommited() {
 		case rf.applyCh <- msg:
 			rf.lastApplied = rf.lastIncludedIndex
 			return
-		case <-timeout:
+		case <-time.After(time.Millisecond):
 			return
 		}
 	}
@@ -212,7 +201,7 @@ func (rf *Raft) applyCommited() {
 			case rf.applyCh <- msg:
 				// log.Printf("[ApplyDone]\t%d apply %d done\n", rf.me, rf.lastApplied)
 				continue
-			case <-timeout:
+			case <-time.After(time.Millisecond):
 				// log.Printf("[ApplyTimeout]\t%d apply %d timeout\n", rf.me, rf.lastApplied)
 				rf.lastApplied--
 				return
@@ -448,7 +437,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// log.Printf("[AppendEntries]\t%d received AppendEntries from %d in term %d, with its lastId %d, lastTerm %d; leader's PrevId %d, PrevTerm %d",
 	// rf.me, args.LeaderId, rf.currentTerm, lastIndex, lastTerm, args.PrevLogIndex, args.PrevLogTerm)
 	if lastIndex > args.PrevLogIndex {
-		// lastIndex != 0
+		// i >= -1
 		i -= lastIndex - args.PrevLogIndex
 		if i >= 0 {
 			lastIndex = rf.log[i].Index
@@ -483,7 +472,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.MatchLogIndex = rf.lastIncludedIndex
 		if len(rf.log) > 0 {
 			reply.NextLogIndex = rf.log[len(rf.log)-1].Index + 1
-			reply.MatchLogIndex = rf.log[i-1].Index
+			if i > 0 {
+				reply.MatchLogIndex = rf.log[i-1].Index
+			}
 		}
 
 		// already up to date with leader, update commit index
@@ -493,8 +484,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				// always not choose this branch?
 				rf.commitIndex = rf.log[i-1].Index
 			}
-			// apply commited logs
-			// rf.applyCommited()
 		}
 	} else {
 		// last index < arg.PrevLogIndex or (last index == arg.PrevLogIndex and last Term < args.PrevLogTerm)
@@ -538,8 +527,6 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	// index := 1
 	index := rf.lastIncludedIndex + 1
 	if len(rf.log) > 0 {
 		index = rf.log[len(rf.log)-1].Index + 1
@@ -560,6 +547,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.persist()
 	}
 
+	rf.mu.Unlock()
+	rf.newLog.Broadcast()
 	return index, term, isLeader
 }
 
@@ -721,7 +710,7 @@ func (rf *Raft) leaderOp() {
 	sortedMatchPeers[0], sortedMatchPeers[rf.me] = rf.me, 0
 	for !rf.killed() {
 		// log.Printf("[LeaderHeartBeat] %d", rf.me)
-		timeout := make(chan int)
+		// timeout := make(chan int)
 		appCond := make(chan int)
 		quit := make(chan int)
 		for i := 0; i < len(rf.peers); i++ {
@@ -775,6 +764,12 @@ func (rf *Raft) leaderOp() {
 										sortedMatchPeers[id], sortedMatchPeers[id+1] = sortedMatchPeers[id+1], sortedMatchPeers[id]
 									}
 								}
+								// find the n/2+1's largest number
+								n := rf.matchIndex[sortedMatchPeers[len(rf.peers)/2]]
+								if n > rf.commitIndex && n >= termStartIndex {
+									rf.commitIndex = n
+								}
+								rf.applyCommited()
 							}
 						}
 						return
@@ -832,18 +827,36 @@ func (rf *Raft) leaderOp() {
 										sortedMatchPeers[id], sortedMatchPeers[id+1] = sortedMatchPeers[id+1], sortedMatchPeers[id]
 									}
 								}
+								// find the n/2+1's largest number
+								n := rf.matchIndex[sortedMatchPeers[len(rf.peers)/2]]
+								if n > rf.commitIndex && n >= termStartIndex {
+									rf.commitIndex = n
+									rf.applyCommited()
+								}
 							}
 						}
 					}
 				}(i)
 			}
 		}
+		// go func() {
+		// 	// pause for 50 milliseconds.
+		// 	//
+		// 	ms := 50
+		// 	time.Sleep(time.Duration(ms) * time.Millisecond)
+		// 	timeout <- 1
+		// }()
+		newLog := make(chan int)
 		go func() {
-			// pause for 50 milliseconds.
-			//
-			ms := 50
-			time.Sleep(time.Duration(ms) * time.Millisecond)
-			timeout <- 1
+			rf.newLog.L.Lock()
+			rf.newLog.Wait()
+			rf.newLog.L.Unlock()
+			select {
+			case <-quit:
+				return
+			case newLog <- 1:
+				return
+			}
 		}()
 		select {
 		case c := <-appCond:
@@ -866,8 +879,11 @@ func (rf *Raft) leaderOp() {
 			// log.Printf("[ChangeLeader]\t%d giving up leader, found new leader alive", rf.me)
 			go rf.ticker()
 			return
-		case <-timeout:
+		// case <-timeout:
+		case <-time.After(time.Duration(50) * time.Millisecond):
 			// heartbeat
+			close(quit)
+		case <-newLog:
 			close(quit)
 		}
 		rf.mu.Lock()
@@ -913,6 +929,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.sstate = Follower
 	rf.leaderAlive = make(chan int)
+	rf.newLog = sync.NewCond(&sync.Mutex{})
 
 	// Your initialization code here (2A, 2B, 2C).
 	rf.votedFor = -1
