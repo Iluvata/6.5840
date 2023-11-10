@@ -179,7 +179,7 @@ func (rf *Raft) applyCommited() {
 		case rf.applyCh <- msg:
 			rf.lastApplied = rf.lastIncludedIndex
 			return
-		case <-time.After(time.Millisecond):
+		default:
 			return
 		}
 	}
@@ -196,13 +196,13 @@ func (rf *Raft) applyCommited() {
 			msg.Command = rf.log[i].Command
 			msg.CommandIndex = rf.log[i].Index
 			msg.CommandTerm = rf.log[i].Term
-			// log.Printf("[ApplyCommand]\t%d applied %v, with last applied %d, term %d, commitId %d\n", rf.me, msg.Command, rf.lastApplied, rf.log[i].Term, rf.commitIndex)
+			DPrintf("[ApplyCommand]\t%d applied %v, with last applied %d, term %d, commitId %d\n", rf.me, msg.Command, rf.lastApplied, rf.log[i].Term, rf.commitIndex)
 			select {
 			case rf.applyCh <- msg:
-				// log.Printf("[ApplyDone]\t%d apply %d done\n", rf.me, rf.lastApplied)
+				// DPrintf("[ApplyDone]\t%d apply %d done\n", rf.me, rf.lastApplied)
 				continue
 			case <-time.After(time.Millisecond):
-				// log.Printf("[ApplyTimeout]\t%d apply %d timeout\n", rf.me, rf.lastApplied)
+				DPrintf("[ApplyTimeout]\t%d apply %d timeout\n", rf.me, rf.lastApplied)
 				rf.lastApplied--
 				return
 			}
@@ -238,7 +238,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.snapshot = snapshot
 
 	rf.persist()
-	// log.Printf("[SnapShot]  \t%d took snapshot till index %d", rf.me, index)
+	// DPrintf("[SnapShot]  \t%d took snapshot till index %d", rf.me, index)
 }
 
 type InstallSnapshotArgs struct {
@@ -257,7 +257,7 @@ type InstallSnapshotReply struct {
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
-	// log.Printf("[InstallSnapshot]\t%d received from %d in term %d, with it's own lastIncludedIndex %d, leader's %d",
+	// DPrintf("[InstallSnapshot]\t%d received from %d in term %d, with it's own lastIncludedIndex %d, leader's %d",
 	// rf.me, args.LeaderId, rf.currentTerm, rf.lastIncludedIndex, args.LastIncludedIndex)
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
@@ -297,9 +297,9 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.persist()
 	rf.mu.Unlock()
 	// restart timer
-	// log.Printf("[SnapshotHeartBeat] %d sending leaderAlive heartbeat", rf.me)
+	// DPrintf("[SnapshotHeartBeat] %d sending leaderAlive heartbeat", rf.me)
 	rf.leaderAlive <- 1
-	// log.Printf("[SnapshotHeartBeat] %d sent leaderAlive heartbeat", rf.me)
+	// DPrintf("[SnapshotHeartBeat] %d sent leaderAlive heartbeat", rf.me)
 }
 
 func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
@@ -344,8 +344,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.sstate = Follower
 			reply.VoteGranted = true
 			// update timer
-			// log.Printf("[VoteGranted]\t%d voted for %d in term %d, with last log index %d, log term %d; %d's last log index %d, log term %d\n",
-			// rf.me, args.CandidateId, args.Term, lastLogIndex, lastLogTerm, args.CandidateId, args.LastLogIndex, args.LastLogTerm)
+			DPrintf("[VoteGranted]\t%d voted for %d in term %d, with last log index %d, log term %d; %d's last log index %d, log term %d\n",
+				rf.me, args.CandidateId, args.Term, lastLogIndex, lastLogTerm, args.CandidateId, args.LastLogIndex, args.LastLogTerm)
 			rf.persist()
 			rf.mu.Unlock()
 			rf.leaderAlive <- 1
@@ -354,8 +354,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	reply.VoteGranted = false
 	reply.Term = rf.currentTerm
-	// log.Printf("[VoteRej]\t%d rejected %d in term %d, with last log index %d, log term %d; %d's last log index %d, log term %d\n",
-	// rf.me, args.CandidateId, args.Term, lastLogIndex, lastLogTerm, args.CandidateId, args.LastLogIndex, args.LastLogTerm)
+	DPrintf("[VoteRej]\t%d rejected %d in term %d, with last log index %d, log term %d; %d's last log index %d, log term %d\n",
+		rf.me, args.CandidateId, args.Term, lastLogIndex, lastLogTerm, args.CandidateId, args.LastLogIndex, args.LastLogTerm)
 	rf.mu.Unlock()
 }
 
@@ -434,8 +434,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		lastIndex = rf.log[i].Index
 		lastTerm = rf.log[i].Term
 	}
-	// log.Printf("[AppendEntries]\t%d received AppendEntries from %d in term %d, with its lastId %d, lastTerm %d; leader's PrevId %d, PrevTerm %d",
-	// rf.me, args.LeaderId, rf.currentTerm, lastIndex, lastTerm, args.PrevLogIndex, args.PrevLogTerm)
+	DPrintf("[AppendEntries]\t%d received AppendEntries from %d in term %d, with its lastId %d, lastTerm %d; leader's PrevId %d, PrevTerm %d",
+		rf.me, args.LeaderId, rf.currentTerm, lastIndex, lastTerm, args.PrevLogIndex, args.PrevLogTerm)
 	if lastIndex > args.PrevLogIndex {
 		// i >= -1
 		i -= lastIndex - args.PrevLogIndex
@@ -503,9 +503,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.persist()
 	rf.mu.Unlock()
 	// restart timer
-	// log.Printf("[AppendHeartBeat] %d sending leaderAlive heartbeat", rf.me)
+	// DPrintf("[AppendHeartBeat] %d sending leaderAlive heartbeat", rf.me)
 	rf.leaderAlive <- 1
-	// log.Printf("[AppendHeartBeat] %d sent leaderAlive heartbeat", rf.me)
+	// DPrintf("[AppendHeartBeat] %d sent leaderAlive heartbeat", rf.me)
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -536,7 +536,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (2B).
 	if isLeader {
-		// log.Printf("[NewCommand]\t%d received cmd %v\n", rf.me, command)
+		DPrintf("[NewCommand]\t%d received cmd %v\n", rf.me, command)
 		entry := LogEntry{}
 		entry.Index = index
 		entry.Term = term
@@ -573,14 +573,14 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) ticker() {
 	for !rf.killed() {
-		// log.Printf("[FollowerHeartBeat] %d", rf.me)
+		// DPrintf("[FollowerHeartBeat] %d", rf.me)
 		// Your code here (2A)
 		// Check if a leader election should be started.
 		newElection := make(chan int)
 		go func() {
 			// pause for a random amount of time between 100 and 400
 			// milliseconds.
-			ms := 100 + (rand.Int63() % 300)
+			ms := 120 + (rand.Int63() % 300)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 			newElection <- 1
 		}()
@@ -594,7 +594,7 @@ func (rf *Raft) ticker() {
 			}
 		}
 	}
-	// log.Printf("[KilledFromTicker] %d killed", rf.me)
+	// DPrintf("[KilledFromTicker] %d killed", rf.me)
 }
 
 func (rf *Raft) startElection() bool {
@@ -614,7 +614,7 @@ func (rf *Raft) startElection() bool {
 			args.LastLogTerm = rf.log[len(rf.log)-1].Term
 		}
 		rf.persist()
-		// log.Printf("[CandHeartBeat] %d of term %d", rf.me, rf.currentTerm)
+		// DPrintf("[CandHeartBeat] %d of term %d", rf.me, rf.currentTerm)
 		rf.mu.Unlock()
 
 		voteCollected := 1
@@ -681,13 +681,13 @@ func (rf *Raft) startElection() bool {
 			}
 		}
 	}
-	// log.Printf("[KilledFromCand] %d killed", rf.me)
+	// DPrintf("[KilledFromCand] %d killed", rf.me)
 	return false
 }
 
 func (rf *Raft) leaderOp() {
 	rf.mu.Lock()
-	// log.Printf("[NewLeader] \t%d become leader in term %d\n", rf.me, rf.currentTerm)
+	DPrintf("[NewLeader] \t%d become leader in term %d\n", rf.me, rf.currentTerm)
 	rf.sstate = Leader
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
@@ -709,131 +709,150 @@ func (rf *Raft) leaderOp() {
 	}
 	sortedMatchPeers[0], sortedMatchPeers[rf.me] = rf.me, 0
 	for !rf.killed() {
-		// log.Printf("[LeaderHeartBeat] %d", rf.me)
+		// DPrintf("[LeaderHeartBeat] %d", rf.me)
 		// timeout := make(chan int)
 		appCond := make(chan int)
 		quit := make(chan int)
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
 				go func(i int) {
-					rf.mu.Lock()
-					if rf.currentTerm != leaderTerm {
-						rf.mu.Unlock()
-						return
-					}
-					if rf.nextIndex[i] <= rf.lastIncludedIndex {
-						// already snapshotted in leader, send snapshot
-						args := InstallSnapshotArgs{}
-						args.LeaderId = rf.me
-						args.Term = leaderTerm
-						args.LastIncludedIndex = rf.lastIncludedIndex
-						args.LastIncludedTerm = rf.lastIncludedTerm
-						args.Data = rf.snapshot
-						rf.mu.Unlock()
-						reply := InstallSnapshotReply{}
-						ok := rf.sendInstallSnapshot(i, &args, &reply)
-						if ok {
-							if reply.Term > leaderTerm {
-								select {
-								case <-quit:
-									return
-								case appCond <- reply.Term:
-									return
-								}
-							} else {
-								// assume install succeed
+					needReply := true
+					for needReply {
+						needReply = false
+						select {
+						case <-quit:
+							return
+						// default:
+						case <-time.After(time.Millisecond):
+							func() {
 								rf.mu.Lock()
-								defer rf.mu.Unlock()
-								if rf.currentTerm != leaderTerm || reply.NextLogIndex < rf.matchIndex[i] {
+								if rf.currentTerm != leaderTerm {
+									rf.mu.Unlock()
 									return
 								}
-								// don't have to roll back nextIndex in InstallSnapshot
-								if reply.NextLogIndex > rf.nextIndex[i] {
-									if reply.NextLogIndex > rf.nextIndex[rf.me] {
-										rf.nextIndex[i] = rf.nextIndex[rf.me]
+								if rf.nextIndex[i] <= rf.lastIncludedIndex {
+									// already snapshotted in leader, send snapshot
+									args := InstallSnapshotArgs{}
+									args.LeaderId = rf.me
+									args.Term = leaderTerm
+									args.LastIncludedIndex = rf.lastIncludedIndex
+									args.LastIncludedTerm = rf.lastIncludedTerm
+									args.Data = rf.snapshot
+									rf.mu.Unlock()
+									reply := InstallSnapshotReply{}
+									ok := rf.sendInstallSnapshot(i, &args, &reply)
+									if ok {
+										if reply.Term > leaderTerm {
+											select {
+											case <-quit:
+												return
+											case appCond <- reply.Term:
+												return
+											}
+										} else {
+											// assume install succeed
+											rf.mu.Lock()
+											defer rf.mu.Unlock()
+											if rf.currentTerm != leaderTerm || reply.NextLogIndex < rf.matchIndex[i] {
+												return
+											}
+											// don't have to roll back nextIndex in InstallSnapshot
+											if reply.NextLogIndex > rf.nextIndex[i] {
+												if reply.NextLogIndex > rf.nextIndex[rf.me] {
+													rf.nextIndex[i] = rf.nextIndex[rf.me]
+												} else {
+													rf.nextIndex[i] = reply.NextLogIndex
+												}
+											}
+											if reply.MatchLogIndex > rf.matchIndex[i] {
+												rf.matchIndex[i] = reply.MatchLogIndex
+												id := len(rf.peers) - 1
+												for ; sortedMatchPeers[id] != i; id-- {
+												}
+												for id -= 1; reply.MatchLogIndex > rf.matchIndex[sortedMatchPeers[id]]; id-- {
+													sortedMatchPeers[id], sortedMatchPeers[id+1] = sortedMatchPeers[id+1], sortedMatchPeers[id]
+												}
+											}
+											// find the n/2+1's largest number
+											n := rf.matchIndex[sortedMatchPeers[len(rf.peers)/2]]
+											if n > rf.commitIndex && n >= termStartIndex {
+												rf.commitIndex = n
+											}
+											rf.applyCommited()
+											if rf.nextIndex[i] < rf.nextIndex[rf.me] {
+												needReply = true
+											}
+										}
+									}
+									return
+								}
+								// rf.nextIndex[i] > rf.lastIncludedIndex
+								args := AppendEntriesArgs{}
+								args.LeaderId = rf.me
+								args.Term = leaderTerm
+								args.LeaderCommit = rf.commitIndex
+								args.PrevLogIndex = rf.nextIndex[i] - 1
+								args.PrevLogTerm = rf.lastIncludedTerm
+								if len(rf.log) > 0 {
+									// offset := rf.log[0].Index
+									offset := rf.lastIncludedIndex + 1
+									if args.PrevLogIndex-offset >= 0 {
+										args.PrevLogTerm = rf.log[args.PrevLogIndex-offset].Term
+									}
+									args.Entries = rf.log[args.PrevLogIndex-offset+1:]
+								}
+								rf.mu.Unlock()
+								reply := AppendEntriesReply{}
+								ok := rf.sendAppendEntries(i, &args, &reply)
+								if ok {
+									if reply.Term > leaderTerm {
+										select {
+										case <-quit:
+											return
+										case appCond <- reply.Term:
+											return
+										}
 									} else {
-										rf.nextIndex[i] = reply.NextLogIndex
+										rf.mu.Lock()
+										defer rf.mu.Unlock()
+										if rf.currentTerm != leaderTerm || reply.NextLogIndex < rf.matchIndex[i] {
+											return
+										}
+										if !reply.Success {
+											if reply.NextLogIndex < rf.nextIndex[i] {
+												rf.nextIndex[i] = reply.NextLogIndex
+												needReply = true
+											}
+										} else {
+											if reply.NextLogIndex > rf.nextIndex[i] {
+												if reply.NextLogIndex > rf.nextIndex[rf.me] {
+													rf.nextIndex[i] = rf.nextIndex[rf.me]
+												} else {
+													rf.nextIndex[i] = reply.NextLogIndex
+												}
+												if rf.nextIndex[i] < rf.nextIndex[rf.me] {
+													needReply = true
+												}
+											}
+											if reply.MatchLogIndex > rf.matchIndex[i] {
+												rf.matchIndex[i] = reply.MatchLogIndex
+												id := len(rf.peers) - 1
+												for ; sortedMatchPeers[id] != i; id-- {
+												}
+												for id -= 1; reply.MatchLogIndex > rf.matchIndex[sortedMatchPeers[id]]; id-- {
+													sortedMatchPeers[id], sortedMatchPeers[id+1] = sortedMatchPeers[id+1], sortedMatchPeers[id]
+												}
+											}
+											// find the n/2+1's largest number
+											n := rf.matchIndex[sortedMatchPeers[len(rf.peers)/2]]
+											if n > rf.commitIndex && n >= termStartIndex {
+												rf.commitIndex = n
+												rf.applyCommited()
+											}
+										}
 									}
 								}
-								if reply.MatchLogIndex > rf.matchIndex[i] {
-									rf.matchIndex[i] = reply.MatchLogIndex
-									id := len(rf.peers) - 1
-									for ; sortedMatchPeers[id] != i; id-- {
-									}
-									for id -= 1; reply.MatchLogIndex > rf.matchIndex[sortedMatchPeers[id]]; id-- {
-										sortedMatchPeers[id], sortedMatchPeers[id+1] = sortedMatchPeers[id+1], sortedMatchPeers[id]
-									}
-								}
-								// find the n/2+1's largest number
-								n := rf.matchIndex[sortedMatchPeers[len(rf.peers)/2]]
-								if n > rf.commitIndex && n >= termStartIndex {
-									rf.commitIndex = n
-								}
-								rf.applyCommited()
-							}
-						}
-						return
-					}
-					// rf.nextIndex[i] > rf.lastIncludedIndex
-					args := AppendEntriesArgs{}
-					args.LeaderId = rf.me
-					args.Term = leaderTerm
-					args.LeaderCommit = rf.commitIndex
-					args.PrevLogIndex = rf.nextIndex[i] - 1
-					args.PrevLogTerm = rf.lastIncludedTerm
-					if len(rf.log) > 0 {
-						// offset := rf.log[0].Index
-						offset := rf.lastIncludedIndex + 1
-						if args.PrevLogIndex-offset >= 0 {
-							args.PrevLogTerm = rf.log[args.PrevLogIndex-offset].Term
-						}
-						args.Entries = rf.log[args.PrevLogIndex-offset+1:]
-					}
-					rf.mu.Unlock()
-					reply := AppendEntriesReply{}
-					ok := rf.sendAppendEntries(i, &args, &reply)
-					if ok {
-						if reply.Term > leaderTerm {
-							select {
-							case <-quit:
-								return
-							case appCond <- reply.Term:
-								return
-							}
-						} else {
-							rf.mu.Lock()
-							defer rf.mu.Unlock()
-							if rf.currentTerm != leaderTerm || reply.NextLogIndex < rf.matchIndex[i] {
-								return
-							}
-							if !reply.Success {
-								if reply.NextLogIndex < rf.nextIndex[i] {
-									rf.nextIndex[i] = reply.NextLogIndex
-								}
-							} else {
-								if reply.NextLogIndex > rf.nextIndex[i] {
-									if reply.NextLogIndex > rf.nextIndex[rf.me] {
-										rf.nextIndex[i] = rf.nextIndex[rf.me]
-									} else {
-										rf.nextIndex[i] = reply.NextLogIndex
-									}
-								}
-								if reply.MatchLogIndex > rf.matchIndex[i] {
-									rf.matchIndex[i] = reply.MatchLogIndex
-									id := len(rf.peers) - 1
-									for ; sortedMatchPeers[id] != i; id-- {
-									}
-									for id -= 1; reply.MatchLogIndex > rf.matchIndex[sortedMatchPeers[id]]; id-- {
-										sortedMatchPeers[id], sortedMatchPeers[id+1] = sortedMatchPeers[id+1], sortedMatchPeers[id]
-									}
-								}
-								// find the n/2+1's largest number
-								n := rf.matchIndex[sortedMatchPeers[len(rf.peers)/2]]
-								if n > rf.commitIndex && n >= termStartIndex {
-									rf.commitIndex = n
-									rf.applyCommited()
-								}
-							}
+							}()
 						}
 					}
 				}(i)
@@ -870,17 +889,16 @@ func (rf *Raft) leaderOp() {
 				rf.persist()
 			}
 			rf.mu.Unlock()
-			// log.Printf("[ChangeLeader]\t%d giving up leader, found new term %d", rf.me, c)
+			DPrintf("[ChangeLeader]\t%d giving up leader, found new term %d", rf.me, c)
 			go rf.ticker()
 			return
 		case <-rf.leaderAlive:
 			// already set to follower
 			close(quit)
-			// log.Printf("[ChangeLeader]\t%d giving up leader, found new leader alive", rf.me)
+			DPrintf("[ChangeLeader]\t%d giving up leader, found new leader alive", rf.me)
 			go rf.ticker()
 			return
-		// case <-timeout:
-		case <-time.After(time.Duration(50) * time.Millisecond):
+		case <-time.After(time.Duration(100) * time.Millisecond):
 			// heartbeat
 			close(quit)
 		case <-newLog:
@@ -890,7 +908,7 @@ func (rf *Raft) leaderOp() {
 		if rf.currentTerm > leaderTerm {
 			// has leader alive
 			rf.mu.Unlock()
-			// log.Printf("[LeaderTermChanged] %d: unexpected change of term", rf.me)
+			DPrintf("[LeaderTermChanged] %d: unexpected change of term", rf.me)
 			go rf.ticker()
 			return
 		}
@@ -902,7 +920,7 @@ func (rf *Raft) leaderOp() {
 		rf.applyCommited()
 		rf.mu.Unlock()
 	}
-	// log.Printf("[LeaderKilled] %d killed", rf.me)
+	// DPrintf("[LeaderKilled] %d killed", rf.me)
 }
 
 // the service or tester wants to create a Raft server. the ports
