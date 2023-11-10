@@ -461,10 +461,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if lastIndex == args.PrevLogIndex && lastTerm == args.PrevLogTerm || lastIndex > args.PrevLogIndex {
 		// safe to append
 		reply.Success = true
-		for i, j = i+1, j+1; i < len(rf.log) && j < len(args.Entries) && args.Entries[j].Term == rf.log[i].Term; i, j = i+1, j+1 {
+		entries := args.Entries
+		for i, j = i+1, j+1; i < len(rf.log) && j < len(entries) && entries[j].Term == rf.log[i].Term; i, j = i+1, j+1 {
 		}
-		if j < len(args.Entries) {
-			rf.log = append(rf.log[:i], args.Entries[j:]...)
+		if j < len(entries) {
+			rf.log = append(rf.log[:i], entries[j:]...)
 			i += len(args.Entries) - j
 		}
 
