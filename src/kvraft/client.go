@@ -11,8 +11,10 @@ import (
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
-	lastLeader int
 	mu         sync.Mutex
+	me         int64
+	lastLeader int
+	lastIndex  int
 }
 
 func nrand() int64 {
@@ -26,6 +28,8 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.me = nrand()
+	DPrintf("[NewCk]\t%d, %d", ck.me, ck.me%23)
 	return ck
 }
 
@@ -43,15 +47,18 @@ func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
 	value := ""
+	args := GetArgs{}
+	// args.Ck = ck.me
+	args.Key = key
 	ck.mu.Lock()
+	// ck.lastIndex++
+	// args.Index = ck.lastIndex
 	lastLeader := ck.lastLeader
 	ck.mu.Unlock()
-	args := GetArgs{}
-	args.Key = key
 	for {
 		reply := GetReply{}
 		ok := ck.servers[lastLeader].Call("KVServer.Get", &args, &reply)
-		DPrintf("[CkGet]\tTo %d, ok=%v, key=%v, Err=%v", lastLeader, ok, key, reply.Err)
+		DPrintf("[CkGet]\tck %d to server %d, ok=%v, key=%v, Err=%v", ck.me%23, reply.ServerId, ok, key, reply.Err)
 		if !ok || reply.Err == ErrWrongLeader {
 			lastLeader = (lastLeader + 1) % len(ck.servers)
 		} else if reply.Err == ErrNoKey {
@@ -77,18 +84,21 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
-	ck.mu.Lock()
-	lastLeader := ck.lastLeader
-	ck.mu.Unlock()
 	args := PutAppendArgs{}
+	args.Ck = ck.me
 	args.Key = key
 	args.Value = value
 	args.Op = op
+	ck.mu.Lock()
+	ck.lastIndex++
+	args.Index = ck.lastIndex
+	lastLeader := ck.lastLeader
+	ck.mu.Unlock()
 	for {
 		reply := PutAppendReply{}
 		ok := ck.servers[lastLeader].Call("KVServer.PutAppend", &args, &reply)
-		DPrintf("[CkPutAppend]\tFrom %d, ok=%v, Err=%v, key=%v, val=%v, op=%v",
-			lastLeader, ok, reply.Err, key, value, op)
+		DPrintf("[CkPutAppend]\tck %d to server %d, ok=%v, Err=%v, key=%v, val=%v, op=%v",
+			ck.me%23, reply.ServerId, ok, reply.Err, key, value, op)
 		if !ok || reply.Err == ErrWrongLeader {
 			lastLeader = (lastLeader + 1) % len(ck.servers)
 		} else if reply.Err == OK {

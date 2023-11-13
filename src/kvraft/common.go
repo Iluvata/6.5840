@@ -9,6 +9,12 @@ const (
 
 type Err string
 
+type CkArgs interface {
+}
+
+type CkReply interface {
+}
+
 // Put or Append
 type PutAppendArgs struct {
 	Key   string
@@ -17,18 +23,24 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Ck    int64 // clerk id
+	Index int
 }
 
 type PutAppendReply struct {
-	Err Err
+	Err      Err
+	ServerId int
 }
 
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+	// Ck    int64 // clerk id
+	// Index int
 }
 
 type GetReply struct {
-	Err   Err
-	Value string
+	Err      Err
+	Value    string
+	ServerId int
 }

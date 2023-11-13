@@ -29,8 +29,10 @@ type Op struct {
 }
 
 type OpRes struct {
-	index     int
-	term      int
+	index int
+	term  int
+	// ck        int64
+	// ckIndex   int
 	replyCond chan string
 	err       Err
 }
@@ -46,6 +48,7 @@ type KVServer struct {
 
 	// Your definitions here.
 	resQueue []*OpRes
+	ckId     map[int64]map[int]bool
 	KVdata   map[string]string
 }
 
@@ -64,13 +67,16 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	opReply := OpRes{}
 	opReply.index = index
 	opReply.term = term
+	// opReply.ck = args.Ck
+	// opReply.ckIndex = args.Index
 	opReply.replyCond = make(chan string)
 	kv.resQueue = append(kv.resQueue, &opReply)
-	DPrintf("[ServerGet]\t%d received Get id %d, term %d; for key %v", index, term, kv.me, args.Key)
 	kv.mu.Unlock()
 
 	reply.Value = <-opReply.replyCond
 	reply.Err = opReply.err
+	reply.ServerId = kv.me
+	DPrintf("[ServerGet]\t%d received Get id=%d, term=%d; for key=%v", kv.me, index, term, args.Key)
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
@@ -80,23 +86,43 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	op.Key = args.Key
 	op.Value = args.Value
 	kv.mu.Lock()
+	if kv.ckId[args.Ck][args.Index] {
+		reply.Err = OK
+		reply.ServerId = kv.me
+		kv.mu.Unlock()
+		DPrintf("[ServerPutAppendRepeat]\t%d received repeat PutAppend from %d, ckid=%d, for %v key=%v, value=%v",
+			kv.me, args.Ck%23, args.Index, args.Op, args.Key, args.Value)
+		return
+	}
 	index, term, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		kv.mu.Unlock()
 		return
 	}
+	// kv.ckLastId[args.Ck] = args.Index
+	if _, ok := kv.ckId[args.Ck]; !ok {
+		kv.ckId[args.Ck] = make(map[int]bool)
+	}
 	opReply := OpRes{}
 	opReply.index = index
 	opReply.term = term
 	opReply.replyCond = make(chan string)
 	kv.resQueue = append(kv.resQueue, &opReply)
-	DPrintf("[ServerPutAppend]\t%d received PutAppend id %d, term %d; for %v key %v, value %v",
-		kv.me, index, term, args.Op, args.Key, args.Value)
 	kv.mu.Unlock()
+	DPrintf("[ServerPutAppend]\t%d received PutAppend from %d, ckid=%d, id=%d, term=%d; for %v key=%v, value=%v",
+		kv.me, args.Ck%23, args.Index, index, term, args.Op, args.Key, args.Value)
 
 	<-opReply.replyCond
+	kv.mu.Lock()
+	if opReply.err == OK {
+		kv.ckId[args.Ck][args.Index] = true
+	}
+	kv.mu.Unlock()
 	reply.Err = opReply.err
+	reply.ServerId = kv.me
+	// DPrintf("[ServerPutAppendDone]\t%d received from %d, id=%d, ckid=%d, term=%d; for %v key=%v, value=%v",
+	// kv.me, args.Ck%23, args.Index, term, args.Op, args.Key, args.Value)
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -125,19 +151,23 @@ func replyRes(reply *OpRes, res string) {
 func (kv *KVServer) coordinator() {
 	for !kv.killed() {
 		msg := <-kv.applyCh
+		DPrintf("[MsgApply]\t%d applying id=%d, term=%d", kv.me, msg.CommandIndex, msg.CommandTerm)
 		if msg.SnapshotValid {
 			// TODO
 		}
 		if msg.CommandValid {
 			kv.mu.Lock()
-			DPrintf("[MsgApply]\t%d applying id %d, term %d", kv.me, msg.CommandIndex, msg.CommandTerm)
+			// if _, isLeader := kv.rf.GetState(); isLeader {
+			// 	DPrintf("[MsgApply]\t%d applying id=%d, term=%d", kv.me, msg.CommandIndex, msg.CommandTerm)
+			// }
 			op := msg.Command.(Op)
 			value, ok := "", false
-			if op.Cmd == "Get" {
+			switch op.Cmd {
+			case "Get":
 				value, ok = kv.KVdata[op.Key]
-			} else if op.Cmd == "Put" {
+			case "Put":
 				kv.KVdata[op.Key] = op.Value
-			} else if op.Cmd == "Append" {
+			case "Append":
 				kv.KVdata[op.Key] += op.Value
 			}
 			for len(kv.resQueue) > 0 {
@@ -183,6 +213,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.ckId = make(map[int64]map[int]bool)
 	kv.KVdata = make(map[string]string)
 
 	// You may need initialization code here.

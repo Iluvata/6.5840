@@ -76,7 +76,9 @@ type Raft struct {
 	dead        int32               // set by Kill()
 	sstate      ServerState
 	leaderAlive chan int
+	applyQueue  []ApplyMsg
 	newLog      *sync.Cond
+	newApply    *sync.Cond
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -167,21 +169,15 @@ func (rf *Raft) readPersist(data []byte) {
 func (rf *Raft) applyCommited() {
 	// apply commited logs
 	// assume caller holding the lock
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
 	if rf.lastApplied < rf.lastIncludedIndex {
 		msg := ApplyMsg{}
 		msg.SnapshotValid = true
 		msg.Snapshot = rf.snapshot
 		msg.SnapshotTerm = rf.lastIncludedTerm
 		msg.SnapshotIndex = rf.lastIncludedIndex
-		select {
-		case rf.applyCh <- msg:
-			rf.lastApplied = rf.lastIncludedIndex
-			return
-		default:
-			return
-		}
+		rf.lastApplied = rf.lastIncludedIndex
+		rf.applyQueue = append(rf.applyQueue, msg)
+		rf.newApply.Signal()
 	}
 	if len(rf.log) > 0 {
 		// rf.lastApplied >= rf.lastIncludedIndex
@@ -197,15 +193,8 @@ func (rf *Raft) applyCommited() {
 			msg.CommandIndex = rf.log[i].Index
 			msg.CommandTerm = rf.log[i].Term
 			DPrintf("[ApplyCommand]\t%d applied %v, with last applied %d, term %d, commitId %d\n", rf.me, msg.Command, rf.lastApplied, rf.log[i].Term, rf.commitIndex)
-			select {
-			case rf.applyCh <- msg:
-				// DPrintf("[ApplyDone]\t%d apply %d done\n", rf.me, rf.lastApplied)
-				continue
-			case <-time.After(time.Millisecond):
-				DPrintf("[ApplyTimeout]\t%d apply %d timeout\n", rf.me, rf.lastApplied)
-				rf.lastApplied--
-				return
-			}
+			rf.applyQueue = append(rf.applyQueue, msg)
+			rf.newApply.Signal()
 		}
 	}
 }
@@ -329,7 +318,6 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
-	// defer rf.mu.Unlock()
 	lastLogIndex, lastLogTerm := rf.lastIncludedIndex, rf.lastIncludedTerm
 	if len(rf.log) > 0 {
 		lastLogIndex = rf.log[len(rf.log)-1].Index
@@ -573,13 +561,31 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) ticker() {
+	go func() {
+		// apply msg loop
+		for !rf.killed() {
+			rf.newApply.L.Lock()
+			for !rf.killed() && len(rf.applyQueue) == 0 {
+				rf.newApply.Wait()
+			}
+			if rf.killed() {
+				return
+			}
+			msgs := rf.applyQueue
+			rf.applyQueue = []ApplyMsg{}
+			rf.newApply.L.Unlock()
+			for _, msg := range msgs {
+				rf.applyCh <- msg
+			}
+		}
+	}()
 	for !rf.killed() {
 		// DPrintf("[FollowerHeartBeat] %d", rf.me)
 		// Your code here (2A)
 		// Check if a leader election should be started.
 		newElection := make(chan int)
 		go func() {
-			// pause for a random amount of time between 100 and 400
+			// pause for a random amount of time between 120 and 420
 			// milliseconds.
 			ms := 120 + (rand.Int63() % 300)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
@@ -711,7 +717,6 @@ func (rf *Raft) leaderOp() {
 	sortedMatchPeers[0], sortedMatchPeers[rf.me] = rf.me, 0
 	for !rf.killed() {
 		// DPrintf("[LeaderHeartBeat] %d", rf.me)
-		// timeout := make(chan int)
 		appCond := make(chan int)
 		quit := make(chan int)
 		for i := 0; i < len(rf.peers); i++ {
@@ -723,7 +728,6 @@ func (rf *Raft) leaderOp() {
 						select {
 						case <-quit:
 							return
-						// default:
 						case <-time.After(time.Millisecond):
 							func() {
 								rf.mu.Lock()
@@ -795,7 +799,6 @@ func (rf *Raft) leaderOp() {
 								args.PrevLogIndex = rf.nextIndex[i] - 1
 								args.PrevLogTerm = rf.lastIncludedTerm
 								if len(rf.log) > 0 {
-									// offset := rf.log[0].Index
 									offset := rf.lastIncludedIndex + 1
 									if args.PrevLogIndex-offset >= 0 {
 										args.PrevLogTerm = rf.log[args.PrevLogIndex-offset].Term
@@ -859,13 +862,6 @@ func (rf *Raft) leaderOp() {
 				}(i)
 			}
 		}
-		// go func() {
-		// 	// pause for 50 milliseconds.
-		// 	//
-		// 	ms := 50
-		// 	time.Sleep(time.Duration(ms) * time.Millisecond)
-		// 	timeout <- 1
-		// }()
 		newLog := make(chan int)
 		go func() {
 			rf.newLog.L.Lock()
@@ -936,19 +932,15 @@ func (rf *Raft) leaderOp() {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
 	rf.applyCh = applyCh
-	// rf.commitIndex = 0
-	// rf.lastApplied = 0
-	// rf.currentTerm = 0
 
 	rf.sstate = Follower
 	rf.leaderAlive = make(chan int)
 	rf.newLog = sync.NewCond(&sync.Mutex{})
+	rf.newApply = sync.NewCond(&rf.mu)
 
 	// Your initialization code here (2A, 2B, 2C).
 	rf.votedFor = -1
