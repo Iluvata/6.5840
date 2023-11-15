@@ -181,6 +181,7 @@ func (rf *Raft) applyCommited() {
 	}
 	if len(rf.log) > 0 {
 		// rf.lastApplied >= rf.lastIncludedIndex
+		newApply := false
 		for i := rf.lastApplied - rf.lastIncludedIndex; rf.lastApplied < rf.commitIndex; i++ {
 			rf.lastApplied++
 
@@ -194,6 +195,9 @@ func (rf *Raft) applyCommited() {
 			msg.CommandTerm = rf.log[i].Term
 			DPrintf("[ApplyCommand]\t%d applied %v, with last applied %d, term %d, commitId %d\n", rf.me, msg.Command, rf.lastApplied, rf.log[i].Term, rf.commitIndex)
 			rf.applyQueue = append(rf.applyQueue, msg)
+			newApply = true
+		}
+		if newApply {
 			rf.newApply.Signal()
 		}
 	}
@@ -453,7 +457,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		for i, j = i+1, j+1; i < len(rf.log) && j < len(entries) && entries[j].Term == rf.log[i].Term; i, j = i+1, j+1 {
 		}
 		if j < len(entries) {
-			rf.log = append(rf.log[:i], entries[j:]...)
+			// wierd RPC race issue
+			prelog := rf.log[:i]
+			tmplog := append(prelog, entries[j:]...)
+			rf.log = tmplog
 			i += len(args.Entries) - j
 		}
 

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"math/big"
 	"sync"
+	"time"
 
 	"6.5840/labrpc"
 )
@@ -33,6 +34,11 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	return ck
 }
 
+type GetRes struct {
+	ok    bool
+	value string
+}
+
 // fetch the current value for a key.
 // returns "" if the key does not exist.
 // keeps trying forever in the face of all other errors.
@@ -54,19 +60,39 @@ func (ck *Clerk) Get(key string) string {
 	// ck.lastIndex++
 	// args.Index = ck.lastIndex
 	lastLeader := ck.lastLeader
+	serverNum := len(ck.servers)
 	ck.mu.Unlock()
-	for {
-		reply := GetReply{}
-		ok := ck.servers[lastLeader].Call("KVServer.Get", &args, &reply)
-		DPrintf("[CkGet]\tck %d to server %d, ok=%v, key=%v, Err=%v", ck.me%23, reply.ServerId, ok, key, reply.Err)
-		if !ok || reply.Err == ErrWrongLeader {
-			lastLeader = (lastLeader + 1) % len(ck.servers)
-		} else if reply.Err == ErrNoKey {
-			break
-		} else if reply.Err == OK {
-			value = reply.Value
-			break
-		} // else ErrTryAgain
+	for cont := true; cont; {
+		done := make(chan GetRes)
+		quit := make(chan bool)
+		go func(leader int, args GetArgs, done chan GetRes, quit chan bool) {
+			res := GetRes{}
+			reply := GetReply{}
+			ok := ck.servers[leader].Call("KVServer.Get", &args, &reply)
+			DPrintf("[CkGet]\tck %d to server %d, ok=%v, key=%v, Err=%v, value=%v", ck.me%23, reply.ServerId, ok, key, reply.Err, reply.Value)
+			if reply.Err == ErrNoKey {
+				res.ok = true
+			} else if reply.Err == OK {
+				res.ok = true
+				res.value = reply.Value
+			} // else ErrTryAgain
+			select {
+			case done <- res:
+				return
+			case <-quit:
+				return
+			}
+		}(lastLeader, args, done, quit)
+		select {
+		case res := <-done:
+			value = res.value
+			cont = !res.ok
+		case <-time.After(time.Duration(100) * time.Millisecond):
+			close(quit)
+		}
+		if cont {
+			lastLeader = (lastLeader + 1) % serverNum
+		}
 	}
 	ck.mu.Lock()
 	ck.lastLeader = lastLeader
@@ -93,17 +119,32 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	ck.lastIndex++
 	args.Index = ck.lastIndex
 	lastLeader := ck.lastLeader
+	serverNum := len(ck.servers)
 	ck.mu.Unlock()
-	for {
-		reply := PutAppendReply{}
-		ok := ck.servers[lastLeader].Call("KVServer.PutAppend", &args, &reply)
-		DPrintf("[CkPutAppend]\tck %d to server %d, ok=%v, Err=%v, key=%v, val=%v, op=%v",
-			ck.me%23, reply.ServerId, ok, reply.Err, key, value, op)
-		if !ok || reply.Err == ErrWrongLeader {
-			lastLeader = (lastLeader + 1) % len(ck.servers)
-		} else if reply.Err == OK {
-			break
-		} // else ErrTryAgain
+	for cont := true; cont; {
+		done := make(chan bool)
+		quit := make(chan bool)
+		go func(leader int, args PutAppendArgs, done chan bool, quit chan bool) {
+			reply := PutAppendReply{}
+			ok := ck.servers[leader].Call("KVServer.PutAppend", &args, &reply)
+			DPrintf("[CkPutAppend]\tck %d to server %d, ckId=%v, ok=%v, Err=%v, key=%v, val=%v, op=%v",
+				ck.me%23, reply.ServerId, args.Index, ok, reply.Err, key, value, op)
+			select {
+			case done <- (reply.Err == OK):
+				return
+			case <-quit:
+				return
+			}
+		}(lastLeader, args, done, quit)
+		select {
+		case ok := <-done:
+			cont = !ok
+		case <-time.After(time.Duration(100) * time.Millisecond):
+			close(quit)
+		}
+		if cont {
+			lastLeader = (lastLeader + 1) % serverNum
+		}
 	}
 	ck.mu.Lock()
 	ck.lastLeader = lastLeader

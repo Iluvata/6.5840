@@ -23,16 +23,16 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Cmd   string // "Get" or "Put" or "Append"
-	Key   string
-	Value string
+	Op      string // "Get" or "Put" or "Append"
+	Key     string
+	Value   string
+	Ck      int64
+	CkIndex int
 }
 
 type OpRes struct {
-	index int
-	term  int
-	// ck        int64
-	// ckIndex   int
+	index     int
+	term      int
 	replyCond chan string
 	err       Err
 }
@@ -48,14 +48,15 @@ type KVServer struct {
 
 	// Your definitions here.
 	resQueue []*OpRes
-	ckId     map[int64]map[int]bool
+	ckLastId map[int64]int
+	ckIdStat map[int64]map[int]bool // state of PutAppend RPC. for those index less then lastId, true for haven't received, false (missing) in the map for process done
 	KVdata   map[string]string
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	op := Op{}
-	op.Cmd = "Get"
+	op.Op = "Get"
 	op.Key = args.Key
 	kv.mu.Lock()
 	index, term, isLeader := kv.rf.Start(op)
@@ -67,8 +68,6 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	opReply := OpRes{}
 	opReply.index = index
 	opReply.term = term
-	// opReply.ck = args.Ck
-	// opReply.ckIndex = args.Index
 	opReply.replyCond = make(chan string)
 	kv.resQueue = append(kv.resQueue, &opReply)
 	kv.mu.Unlock()
@@ -82,27 +81,18 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	op := Op{}
-	op.Cmd = args.Op
+	op.Op = args.Op
 	op.Key = args.Key
 	op.Value = args.Value
+	op.Ck = args.Ck
+	op.CkIndex = args.Index
 	kv.mu.Lock()
-	if kv.ckId[args.Ck][args.Index] {
-		reply.Err = OK
-		reply.ServerId = kv.me
-		kv.mu.Unlock()
-		DPrintf("[ServerPutAppendRepeat]\t%d received repeat PutAppend from %d, ckid=%d, for %v key=%v, value=%v",
-			kv.me, args.Ck%23, args.Index, args.Op, args.Key, args.Value)
-		return
-	}
+
 	index, term, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		kv.mu.Unlock()
 		return
-	}
-	// kv.ckLastId[args.Ck] = args.Index
-	if _, ok := kv.ckId[args.Ck]; !ok {
-		kv.ckId[args.Ck] = make(map[int]bool)
 	}
 	opReply := OpRes{}
 	opReply.index = index
@@ -114,15 +104,10 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		kv.me, args.Ck%23, args.Index, index, term, args.Op, args.Key, args.Value)
 
 	<-opReply.replyCond
-	kv.mu.Lock()
-	if opReply.err == OK {
-		kv.ckId[args.Ck][args.Index] = true
-	}
-	kv.mu.Unlock()
 	reply.Err = opReply.err
 	reply.ServerId = kv.me
-	// DPrintf("[ServerPutAppendDone]\t%d received from %d, id=%d, ckid=%d, term=%d; for %v key=%v, value=%v",
-	// kv.me, args.Ck%23, args.Index, term, args.Op, args.Key, args.Value)
+	DPrintf("[ServerPutAppendDone]\t%d received from %d, ckid=%d, id=%d, term=%d; for %v key=%v, value=%v",
+		kv.me, args.Ck%23, args.Index, index, term, args.Op, args.Key, args.Value)
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -144,47 +129,73 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
-func replyRes(reply *OpRes, res string) {
-	reply.replyCond <- res
-}
-
 func (kv *KVServer) coordinator() {
 	for !kv.killed() {
+		// select {
+		// case msg := <-kv.applyCh:
 		msg := <-kv.applyCh
 		DPrintf("[MsgApply]\t%d applying id=%d, term=%d", kv.me, msg.CommandIndex, msg.CommandTerm)
+		value, ok := "", false
+		op := ""
+		kv.mu.Lock()
 		if msg.SnapshotValid {
 			// TODO
 		}
 		if msg.CommandValid {
-			kv.mu.Lock()
 			// if _, isLeader := kv.rf.GetState(); isLeader {
 			// 	DPrintf("[MsgApply]\t%d applying id=%d, term=%d", kv.me, msg.CommandIndex, msg.CommandTerm)
 			// }
-			op := msg.Command.(Op)
-			value, ok := "", false
-			switch op.Cmd {
-			case "Get":
-				value, ok = kv.KVdata[op.Key]
-			case "Put":
-				kv.KVdata[op.Key] = op.Value
-			case "Append":
-				kv.KVdata[op.Key] += op.Value
-			}
-			for len(kv.resQueue) > 0 {
-				kv.resQueue[0].err = ErrTryAgain
-				if msg.CommandIndex < kv.resQueue[0].index {
-					break
-				} else if msg.CommandIndex == kv.resQueue[0].index && msg.CommandTerm == kv.resQueue[0].term {
-					kv.resQueue[0].err = OK
-					if op.Cmd == "Get" && !ok {
-						kv.resQueue[0].err = ErrNoKey
+			cmd := msg.Command.(Op)
+			op = cmd.Op
+			if op == "Get" {
+				value, ok = kv.KVdata[cmd.Key]
+			} else {
+				// check whether PutAppend are repeated
+				repeated := false
+				if cmd.CkIndex <= kv.ckLastId[cmd.Ck] {
+					if !kv.ckIdStat[cmd.Ck][cmd.CkIndex] {
+						repeated = true
+					} else {
+						delete(kv.ckIdStat[cmd.Ck], cmd.CkIndex)
+					}
+				} else {
+					if _, ok := kv.ckIdStat[cmd.Ck]; !ok {
+						kv.ckIdStat[cmd.Ck] = make(map[int]bool)
+					}
+					for i := kv.ckLastId[cmd.Ck] + 1; i < cmd.CkIndex; i++ {
+						kv.ckIdStat[cmd.Ck][i] = true
+					}
+					kv.ckLastId[cmd.Ck] = cmd.CkIndex
+				}
+				if !repeated {
+					switch op {
+					case "Put":
+						kv.KVdata[cmd.Key] = cmd.Value
+					case "Append":
+						kv.KVdata[cmd.Key] += cmd.Value
 					}
 				}
-				go replyRes(kv.resQueue[0], value)
-				kv.resQueue = kv.resQueue[1:]
 			}
-			kv.mu.Unlock()
 		}
+		for len(kv.resQueue) > 0 {
+			kv.resQueue[0].err = ErrTryAgain
+			if msg.CommandIndex < kv.resQueue[0].index {
+				break
+			} else if msg.CommandIndex == kv.resQueue[0].index && msg.CommandTerm == kv.resQueue[0].term {
+				kv.resQueue[0].err = OK
+				if op == "Get" && !ok {
+					kv.resQueue[0].err = ErrNoKey
+				}
+			}
+			// go replyRes(kv.resQueue[0], value)
+			go func(reply *OpRes, res string) {
+				DPrintf("[ServerReply]\t%d replying index=%d, term=%d", kv.me, reply.index, reply.term)
+				reply.replyCond <- res
+				DPrintf("[ServerReplyDone]\t%d replyed index=%d, term=%d", kv.me, reply.index, reply.term)
+			}(kv.resQueue[0], value)
+			kv.resQueue = kv.resQueue[1:]
+		}
+		kv.mu.Unlock()
 	}
 }
 
@@ -213,7 +224,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-	kv.ckId = make(map[int64]map[int]bool)
+	kv.ckLastId = make(map[int64]int)
+	kv.ckIdStat = make(map[int64]map[int]bool)
 	kv.KVdata = make(map[string]string)
 
 	// You may need initialization code here.
