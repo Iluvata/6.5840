@@ -38,11 +38,12 @@ type OpRes struct {
 }
 
 type KVServer struct {
-	mu      sync.Mutex
-	me      int
-	rf      *raft.Raft
-	applyCh chan raft.ApplyMsg
-	dead    int32 // set by Kill()
+	mu        sync.Mutex
+	me        int
+	rf        *raft.Raft
+	applyCh   chan raft.ApplyMsg
+	dead      int32 // set by Kill()
+	appliedId int
 
 	maxraftstate int // snapshot if log grows this big
 
@@ -72,10 +73,10 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.resQueue = append(kv.resQueue, &opReply)
 	kv.mu.Unlock()
 
+	DPrintf("[ServerGet]\t%d received Get id=%d, term=%d; for key=%v", kv.me, index, term, args.Key)
 	reply.Value = <-opReply.replyCond
 	reply.Err = opReply.err
 	reply.ServerId = kv.me
-	DPrintf("[ServerGet]\t%d received Get id=%d, term=%d; for key=%v", kv.me, index, term, args.Key)
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
@@ -138,12 +139,16 @@ func (kv *KVServer) coordinator() {
 		value, ok := "", false
 		op := ""
 		kv.mu.Lock()
+		if msg.CommandIndex != kv.appliedId+1 {
+			log.Fatalf("server %d should apply %d, but it was applying %d", kv.me, kv.appliedId+1, msg.CommandIndex)
+		}
+		kv.appliedId++
 		if msg.SnapshotValid {
 			// TODO
 		}
 		if msg.CommandValid {
 			// if _, isLeader := kv.rf.GetState(); isLeader {
-			// 	DPrintf("[MsgApply]\t%d applying id=%d, term=%d", kv.me, msg.CommandIndex, msg.CommandTerm)
+			// DPrintf("[MsgApply]\t%d applying id=%d, term=%d", kv.me, msg.CommandIndex, msg.CommandTerm)
 			// }
 			cmd := msg.Command.(Op)
 			op = cmd.Op

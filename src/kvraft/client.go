@@ -69,7 +69,9 @@ func (ck *Clerk) Get(key string) string {
 			res := GetRes{}
 			reply := GetReply{}
 			ok := ck.servers[leader].Call("KVServer.Get", &args, &reply)
+			// if reply.Err == ErrNoKey || reply.Err == OK {
 			DPrintf("[CkGet]\tck %d to server %d, ok=%v, key=%v, Err=%v, value=%v", ck.me%23, reply.ServerId, ok, key, reply.Err, reply.Value)
+			// }
 			if reply.Err == ErrNoKey {
 				res.ok = true
 			} else if reply.Err == OK {
@@ -127,8 +129,10 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		go func(leader int, args PutAppendArgs, done chan bool, quit chan bool) {
 			reply := PutAppendReply{}
 			ok := ck.servers[leader].Call("KVServer.PutAppend", &args, &reply)
+			// if reply.Err == OK {
 			DPrintf("[CkPutAppend]\tck %d to server %d, ckId=%v, ok=%v, Err=%v, key=%v, val=%v, op=%v",
 				ck.me%23, reply.ServerId, args.Index, ok, reply.Err, key, value, op)
+			// }
 			select {
 			case done <- (reply.Err == OK):
 				return

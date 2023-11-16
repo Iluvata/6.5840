@@ -560,6 +560,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
+	DPrintf("[Killed] %d killed", rf.me)
 }
 
 func (rf *Raft) killed() bool {
@@ -568,24 +569,6 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) ticker() {
-	go func() {
-		// apply msg loop
-		for !rf.killed() {
-			rf.newApply.L.Lock()
-			for !rf.killed() && len(rf.applyQueue) == 0 {
-				rf.newApply.Wait()
-			}
-			if rf.killed() {
-				return
-			}
-			msgs := rf.applyQueue
-			rf.applyQueue = []ApplyMsg{}
-			rf.newApply.L.Unlock()
-			for _, msg := range msgs {
-				rf.applyCh <- msg
-			}
-		}
-	}()
 	for !rf.killed() {
 		// DPrintf("[FollowerHeartBeat] %d", rf.me)
 		// Your code here (2A)
@@ -958,6 +941,29 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
+	go func() {
+		// apply msg loop
+		applyId := 0
+		for !rf.killed() {
+			rf.newApply.L.Lock()
+			for !rf.killed() && len(rf.applyQueue) == 0 {
+				rf.newApply.Wait()
+			}
+			if rf.killed() {
+				return
+			}
+			msgs := rf.applyQueue
+			rf.applyQueue = []ApplyMsg{}
+			rf.newApply.L.Unlock()
+			for _, msg := range msgs {
+				applyId++
+				if msg.CommandIndex != applyId {
+					log.Fatalf("in raft %d: applying %d while should apply %d", rf.me, msg.CommandIndex, applyId)
+				}
+				rf.applyCh <- msg
+			}
+		}
+	}()
 
 	return rf
 }
