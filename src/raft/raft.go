@@ -211,13 +211,13 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	if index <= rf.lastIncludedIndex {
+		return
+	}
 	if len(rf.log) == 0 {
 		if index != rf.lastIncludedIndex {
 			log.Fatalf("snapshotting index out of range")
 		}
-		return
-	}
-	if index <= rf.lastIncludedIndex {
 		return
 	}
 	// i >= 0
@@ -956,9 +956,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			rf.applyQueue = []ApplyMsg{}
 			rf.newApply.L.Unlock()
 			for _, msg := range msgs {
-				applyId++
-				if msg.CommandIndex != applyId {
-					log.Fatalf("in raft %d: applying %d while should apply %d", rf.me, msg.CommandIndex, applyId)
+				if msg.SnapshotValid {
+					applyId = msg.SnapshotIndex
+				}
+				if msg.CommandValid {
+					applyId++
+					if msg.CommandIndex != applyId {
+						log.Fatalf("in raft %d: applying %d while should apply %d", rf.me, msg.CommandIndex, applyId)
+					}
 				}
 				rf.applyCh <- msg
 			}

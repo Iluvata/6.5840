@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -41,6 +42,7 @@ type KVServer struct {
 	mu        sync.Mutex
 	me        int
 	rf        *raft.Raft
+	persister *raft.Persister
 	applyCh   chan raft.ApplyMsg
 	dead      int32 // set by Kill()
 	appliedId int
@@ -132,26 +134,49 @@ func (kv *KVServer) killed() bool {
 
 func (kv *KVServer) coordinator() {
 	for !kv.killed() {
-		// select {
-		// case msg := <-kv.applyCh:
 		msg := <-kv.applyCh
-		DPrintf("[MsgApply]\t%d applying id=%d, term=%d", kv.me, msg.CommandIndex, msg.CommandTerm)
-		value, ok := "", false
-		op := ""
 		kv.mu.Lock()
-		if msg.CommandIndex != kv.appliedId+1 {
-			log.Fatalf("server %d should apply %d, but it was applying %d", kv.me, kv.appliedId+1, msg.CommandIndex)
-		}
-		kv.appliedId++
-		if msg.SnapshotValid {
-			// TODO
+		if msg.SnapshotValid && msg.Snapshot != nil && len(msg.Snapshot) > 0 {
+			snapshot := msg.Snapshot
+			r := bytes.NewBuffer(snapshot)
+			d := labgob.NewDecoder(r)
+			var ckLastId map[int64]int
+			var ckIdStat map[int64]map[int]bool
+			var KVdata map[string]string
+			if d.Decode(&ckLastId) != nil ||
+				d.Decode(&ckIdStat) != nil ||
+				d.Decode(&KVdata) != nil {
+				//   error...
+				log.Fatalf("kv missing snapshot")
+			} else {
+				kv.ckLastId = ckLastId
+				kv.ckIdStat = ckIdStat
+				kv.KVdata = KVdata
+			}
+			DPrintf("[ApplySnapshot]\t%d applying snapshot id=%d, term=%d", kv.me, msg.SnapshotIndex, msg.SnapshotTerm)
+			kv.appliedId = msg.SnapshotIndex
+			for len(kv.resQueue) > 0 {
+				kv.resQueue[0].err = ErrTryAgain
+				if msg.SnapshotIndex < kv.resQueue[0].index {
+					break
+				}
+				go func(reply *OpRes, res string) {
+					// DPrintf("[ServerReply]\t%d replying index=%d, term=%d", kv.me, reply.index, reply.term)
+					reply.replyCond <- res
+					DPrintf("[ServerDropReply]\t%d dropped reply index=%d, term=%d", kv.me, reply.index, reply.term)
+				}(kv.resQueue[0], "")
+				kv.resQueue = kv.resQueue[1:]
+			}
 		}
 		if msg.CommandValid {
-			// if _, isLeader := kv.rf.GetState(); isLeader {
-			// DPrintf("[MsgApply]\t%d applying id=%d, term=%d", kv.me, msg.CommandIndex, msg.CommandTerm)
-			// }
+			value, ok := "", false
+			DPrintf("[MsgApply]\t%d applying id=%d, term=%d", kv.me, msg.CommandIndex, msg.CommandTerm)
+			kv.appliedId++
+			if msg.CommandIndex != kv.appliedId {
+				log.Fatalf("server %d should apply %d, but it was applying %d", kv.me, kv.appliedId+1, msg.CommandIndex)
+			}
 			cmd := msg.Command.(Op)
-			op = cmd.Op
+			op := cmd.Op
 			if op == "Get" {
 				value, ok = kv.KVdata[cmd.Key]
 			} else {
@@ -181,24 +206,34 @@ func (kv *KVServer) coordinator() {
 					}
 				}
 			}
-		}
-		for len(kv.resQueue) > 0 {
-			kv.resQueue[0].err = ErrTryAgain
-			if msg.CommandIndex < kv.resQueue[0].index {
-				break
-			} else if msg.CommandIndex == kv.resQueue[0].index && msg.CommandTerm == kv.resQueue[0].term {
-				kv.resQueue[0].err = OK
-				if op == "Get" && !ok {
-					kv.resQueue[0].err = ErrNoKey
+			for len(kv.resQueue) > 0 {
+				kv.resQueue[0].err = ErrTryAgain
+				if msg.CommandIndex < kv.resQueue[0].index {
+					break
+				} else if msg.CommandIndex == kv.resQueue[0].index && msg.CommandTerm == kv.resQueue[0].term {
+					kv.resQueue[0].err = OK
+					if op == "Get" && !ok {
+						kv.resQueue[0].err = ErrNoKey
+					}
 				}
+				go func(reply *OpRes, res string) {
+					// DPrintf("[ServerReply]\t%d replying index=%d, term=%d", kv.me, reply.index, reply.term)
+					reply.replyCond <- res
+					DPrintf("[ServerReplyDone]\t%d replyed index=%d, term=%d", kv.me, reply.index, reply.term)
+				}(kv.resQueue[0], value)
+				kv.resQueue = kv.resQueue[1:]
 			}
-			// go replyRes(kv.resQueue[0], value)
-			go func(reply *OpRes, res string) {
-				DPrintf("[ServerReply]\t%d replying index=%d, term=%d", kv.me, reply.index, reply.term)
-				reply.replyCond <- res
-				DPrintf("[ServerReplyDone]\t%d replyed index=%d, term=%d", kv.me, reply.index, reply.term)
-			}(kv.resQueue[0], value)
-			kv.resQueue = kv.resQueue[1:]
+			if kv.maxraftstate > 0 && kv.persister.RaftStateSize() > kv.maxraftstate {
+				// take snapshot
+				index := msg.CommandIndex
+				w := new(bytes.Buffer)
+				e := labgob.NewEncoder(w)
+				e.Encode(kv.ckLastId)
+				e.Encode(kv.ckIdStat)
+				e.Encode(kv.KVdata)
+				snapshot := w.Bytes()
+				kv.rf.Snapshot(index, snapshot)
+			}
 		}
 		kv.mu.Unlock()
 	}
@@ -223,6 +258,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv := new(KVServer)
 	kv.me = me
+	kv.persister = persister
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
