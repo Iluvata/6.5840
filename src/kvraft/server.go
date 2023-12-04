@@ -173,7 +173,7 @@ func (kv *KVServer) coordinator() {
 			DPrintf("[MsgApply]\t%d applying id=%d, term=%d", kv.me, msg.CommandIndex, msg.CommandTerm)
 			kv.appliedId++
 			if msg.CommandIndex != kv.appliedId {
-				log.Fatalf("server %d should apply %d, but it was applying %d", kv.me, kv.appliedId+1, msg.CommandIndex)
+				log.Fatalf("server %d should apply %d, but it was applying %d", kv.me, kv.appliedId, msg.CommandIndex)
 			}
 			cmd := msg.Command.(Op)
 			op := cmd.Op

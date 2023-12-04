@@ -4,14 +4,22 @@ package shardctrler
 // Shardctrler clerk.
 //
 
-import "6.5840/labrpc"
-import "time"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"math/big"
+	"sync"
+	"time"
+
+	"6.5840/labrpc"
+)
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// Your data here.
+	mu sync.Mutex
+	me int64
+	// lastLeader int
+	lastIndex int
 }
 
 func nrand() int64 {
@@ -25,6 +33,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// Your code here.
+	ck.me = nrand()
 	return ck
 }
 
@@ -37,7 +46,7 @@ func (ck *Clerk) Query(num int) Config {
 		for _, srv := range ck.servers {
 			var reply QueryReply
 			ok := srv.Call("ShardCtrler.Query", args, &reply)
-			if ok && reply.WrongLeader == false {
+			if ok && !reply.WrongLeader && reply.Err == OK {
 				return reply.Config
 			}
 		}
@@ -48,14 +57,19 @@ func (ck *Clerk) Query(num int) Config {
 func (ck *Clerk) Join(servers map[int][]string) {
 	args := &JoinArgs{}
 	// Your code here.
+	args.Ck = ck.me
 	args.Servers = servers
+	ck.mu.Lock()
+	ck.lastIndex++
+	args.Index = ck.lastIndex
+	ck.mu.Unlock()
 
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
 			var reply JoinReply
 			ok := srv.Call("ShardCtrler.Join", args, &reply)
-			if ok && reply.WrongLeader == false {
+			if ok && !reply.WrongLeader && reply.Err == OK {
 				return
 			}
 		}
@@ -66,14 +80,19 @@ func (ck *Clerk) Join(servers map[int][]string) {
 func (ck *Clerk) Leave(gids []int) {
 	args := &LeaveArgs{}
 	// Your code here.
+	args.Ck = ck.me
 	args.GIDs = gids
+	ck.mu.Lock()
+	ck.lastIndex++
+	args.Index = ck.lastIndex
+	ck.mu.Unlock()
 
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
 			var reply LeaveReply
 			ok := srv.Call("ShardCtrler.Leave", args, &reply)
-			if ok && reply.WrongLeader == false {
+			if ok && !reply.WrongLeader && reply.Err == OK {
 				return
 			}
 		}
@@ -84,15 +103,20 @@ func (ck *Clerk) Leave(gids []int) {
 func (ck *Clerk) Move(shard int, gid int) {
 	args := &MoveArgs{}
 	// Your code here.
+	args.Ck = ck.me
 	args.Shard = shard
 	args.GID = gid
+	ck.mu.Lock()
+	ck.lastIndex++
+	args.Index = ck.lastIndex
+	ck.mu.Unlock()
 
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
 			var reply MoveReply
 			ok := srv.Call("ShardCtrler.Move", args, &reply)
-			if ok && reply.WrongLeader == false {
+			if ok && !reply.WrongLeader && reply.Err == OK {
 				return
 			}
 		}

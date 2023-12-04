@@ -9,12 +9,6 @@ const (
 
 type Err string
 
-type CkArgs interface {
-}
-
-type CkReply interface {
-}
-
 // Put or Append
 type PutAppendArgs struct {
 	Key   string
@@ -35,8 +29,6 @@ type PutAppendReply struct {
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
-	// Ck    int64 // clerk id
-	// Index int
 }
 
 type GetReply struct {
