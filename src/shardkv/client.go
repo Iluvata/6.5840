@@ -8,11 +8,15 @@ package shardkv
 // talks to the group that holds the key's shard.
 //
 
-import "6.5840/labrpc"
-import "crypto/rand"
-import "math/big"
-import "6.5840/shardctrler"
-import "time"
+import (
+	"crypto/rand"
+	"math/big"
+	"sync"
+	"time"
+
+	"6.5840/labrpc"
+	"6.5840/shardctrler"
+)
 
 // which shard is a key in?
 // please use this function,
@@ -34,10 +38,13 @@ func nrand() int64 {
 }
 
 type Clerk struct {
-	sm       *shardctrler.Clerk
-	config   shardctrler.Config
+	sm *shardctrler.Clerk
+	// config   shardctrler.Config
 	make_end func(string) *labrpc.ClientEnd
 	// You will have to modify this struct.
+	mu             sync.Mutex
+	me             int64
+	shardLastIndex [shardctrler.NShards]int
 }
 
 // the tester calls MakeClerk.
@@ -52,6 +59,7 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck.sm = shardctrler.MakeClerk(ctrlers)
 	ck.make_end = make_end
 	// You'll have to add code here.
+	ck.me = nrand()
 	return ck
 }
 
@@ -62,11 +70,13 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 func (ck *Clerk) Get(key string) string {
 	args := GetArgs{}
 	args.Key = key
+	config := ck.sm.Query(-1)
 
 	for {
+		args.ConfigNum = config.Num
 		shard := key2shard(key)
-		gid := ck.config.Shards[shard]
-		if servers, ok := ck.config.Groups[gid]; ok {
+		gid := config.Shards[shard]
+		if servers, ok := config.Groups[gid]; ok {
 			// try each server for the shard.
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])
@@ -83,10 +93,8 @@ func (ck *Clerk) Get(key string) string {
 		}
 		time.Sleep(100 * time.Millisecond)
 		// ask controler for the latest configuration.
-		ck.config = ck.sm.Query(-1)
+		config = ck.sm.Query(-1)
 	}
-
-	return ""
 }
 
 // shared by Put and Append.
@@ -96,12 +104,18 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args.Key = key
 	args.Value = value
 	args.Op = op
-
+	args.Ck = ck.me
+	shard := key2shard(key)
+	ck.mu.Lock()
+	ck.shardLastIndex[shard]++
+	args.Index = ck.shardLastIndex[shard]
+	ck.mu.Unlock()
+	config := ck.sm.Query(-1)
 
 	for {
-		shard := key2shard(key)
-		gid := ck.config.Shards[shard]
-		if servers, ok := ck.config.Groups[gid]; ok {
+		args.ConfigNum = config.Num
+		gid := config.Shards[shard]
+		if servers, ok := config.Groups[gid]; ok {
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])
 				var reply PutAppendReply
@@ -117,7 +131,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		}
 		time.Sleep(100 * time.Millisecond)
 		// ask controler for the latest configuration.
-		ck.config = ck.sm.Query(-1)
+		config = ck.sm.Query(-1)
 	}
 }
 
