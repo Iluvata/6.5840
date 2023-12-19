@@ -13,7 +13,7 @@ import (
 	"6.5840/shardctrler"
 )
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -64,6 +64,7 @@ type ShardKV struct {
 	make_end     func(string) *labrpc.ClientEnd
 	gid          int
 	config       shardctrler.Config
+	legacyConfig shardctrler.Config
 	configMu     sync.RWMutex
 	ctrlers      []*labrpc.ClientEnd
 	mck          *shardctrler.Clerk
@@ -253,9 +254,11 @@ func (kv *ShardKV) coordinator() {
 			var shardData [shardctrler.NShards]ShardData
 			var legacyData [shardctrler.NShards]ShardData
 			var config shardctrler.Config
+			var legacyConfig shardctrler.Config
 			if d.Decode(&shardData) != nil ||
 				d.Decode(&legacyData) != nil ||
-				d.Decode(&config) != nil {
+				d.Decode(&config) != nil ||
+				d.Decode(&legacyConfig) != nil {
 				//   error...
 				log.Fatalf("kv missing snapshot")
 			} else {
@@ -270,6 +273,7 @@ func (kv *ShardKV) coordinator() {
 
 				kv.configMu.Lock()
 				kv.config = config
+				kv.legacyConfig = legacyConfig
 				kv.configMu.Unlock()
 			}
 			DPrintf("[ApplySnapshot]\t(%d, %d) applying snapshot id=%d, term=%d", kv.gid, kv.me, msg.SnapshotIndex, msg.SnapshotTerm)
@@ -300,7 +304,6 @@ func (kv *ShardKV) coordinator() {
 				// first check whether every shard is up to date
 				kv.configMu.RLock()
 				configNum := kv.config.Num
-				kv.configMu.RUnlock()
 				shardsReady := true
 
 				for i := range cmd.ConfigShards {
@@ -308,11 +311,12 @@ func (kv *ShardKV) coordinator() {
 					kv.shardRWLock[i].RLock()
 					if kv.shardData[i].ConfigNum < configNum {
 						shardsReady = false
-						kv.shardRWLock[i].RUnlock()
-						break
+						servers := kv.legacyConfig.Groups[kv.legacyConfig.Shards[i]]
+						go kv.requestTransferShard(servers, i, kv.shardData[i].ConfigNum)
 					}
 					kv.shardRWLock[i].RUnlock()
 				}
+				kv.configMu.RUnlock()
 
 				if shardsReady && cmd.ConfigNum == configNum+1 {
 					kv.configMu.Lock()
@@ -350,7 +354,7 @@ func (kv *ShardKV) coordinator() {
 						} else if gid == kv.gid {
 							// request for shard from other groups
 							servers := kv.config.Groups[kv.config.Shards[i]]
-							go kv.requestTransferShard(servers, i, configNum)
+							go kv.requestTransferShard(servers, i, kv.shardData[i].ConfigNum)
 							DPrintf("[RequestShard]\t(%d, %d) requesting from (%d: %v) for shard %d, config %d",
 								kv.gid, kv.me, kv.config.Shards[i], servers, i, configNum)
 						} else {
@@ -359,6 +363,10 @@ func (kv *ShardKV) coordinator() {
 						}
 						kv.shardRWLock[i].Unlock()
 					}
+					kv.legacyConfig.Num++
+					kv.legacyConfig.Shards = kv.config.Shards
+					kv.legacyConfig.Groups = kv.config.Groups
+
 					kv.config.Num++
 					kv.config.Shards = cmd.ConfigShards
 					kv.config.Groups = make(map[int][]string)
@@ -472,6 +480,7 @@ func (kv *ShardKV) coordinator() {
 				}
 				kv.configMu.Lock()
 				e.Encode(kv.config)
+				e.Encode(kv.legacyConfig)
 				kv.configMu.Unlock()
 				snapshot := w.Bytes()
 				kv.rf.Snapshot(index, snapshot)
