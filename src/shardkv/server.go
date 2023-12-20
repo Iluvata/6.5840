@@ -219,14 +219,14 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	opReply.replyCond = make(chan string)
 	kv.resQueue = append(kv.resQueue, &opReply)
 	kv.mu.Unlock()
-	// DPrintf("[ServerPutAppend]\t(%d, %d) received PutAppend from %d, ckid=%d, id=%d, term=%d; for %v key=%v, value=%v",
-	// kv.gid, kv.me, args.Ck%23, args.Index, index, term, args.Op, args.Key, args.Value)
+	DPrintf("[ServerPutAppend]\t(%d, %d) received PutAppend from %d, ckid=%d, id=%d, term=%d; for %v key=%v, value=%v",
+		kv.gid, kv.me, args.Ck%23, args.Index, index, term, args.Op, args.Key, args.Value)
 
 	<-opReply.replyCond
 	reply.Err = opReply.err
 	reply.ServerId = kv.me
-	// DPrintf("[ServerPutAppendDone]\t(%d, %d) received from %d, ckid=%d, id=%d, term=%d; for %v key=%v, value=%v",
-	// kv.gid, kv.me, args.Ck%23, args.Index, index, term, args.Op, args.Key, args.Value)
+	DPrintf("[ServerPutAppendDone]\t(%d, %d) received from %d, ckid=%d, id=%d, term=%d; for %v key=%v, value=%v",
+		kv.gid, kv.me, args.Ck%23, args.Index, index, term, args.Op, args.Key, args.Value)
 }
 
 // the tester calls Kill() when a ShardKV instance won't
@@ -285,7 +285,7 @@ func (kv *ShardKV) coordinator() {
 				}
 				go func(reply *OpRes, res string) {
 					reply.replyCond <- res
-					// DPrintf("[ServerDropReply]\t(%d, %d) dropped reply index=%d, term=%d", kv.gid, kv.me, reply.index, reply.term)
+					DPrintf("[ServerDropReply]\t(%d, %d) dropped reply index=%d, term=%d", kv.gid, kv.me, reply.index, reply.term)
 				}(kv.resQueue[0], "")
 				kv.resQueue = kv.resQueue[1:]
 			}
@@ -293,7 +293,7 @@ func (kv *ShardKV) coordinator() {
 		if msg.CommandValid {
 			var value string
 			var err Err = OK
-			// DPrintf("[MsgApply]\t(%d, %d) applying id=%d, term=%d", kv.gid, kv.me, msg.CommandIndex, msg.CommandTerm)
+			DPrintf("[MsgApply]\t(%d, %d) applying id=%d, term=%d, op=%v", kv.gid, kv.me, msg.CommandIndex, msg.CommandTerm, msg.Command.(Op).Op)
 			kv.appliedId++
 			if msg.CommandIndex != kv.appliedId {
 				log.Fatalf("server %d should apply %d, but it was applying %d", kv.me, kv.appliedId, msg.CommandIndex)
@@ -332,23 +332,28 @@ func (kv *ShardKV) coordinator() {
 							if gid != kv.gid {
 								// the last version stop serving, turns into legacyData
 								kv.shardData[i].Alive = false
-								kv.legacyData[i].ShardNum = kv.shardData[i].ShardNum
 								kv.legacyData[i].ConfigNum = kv.shardData[i].ConfigNum
-								kv.legacyData[i].CkLastId = make(map[int64]int)
-								kv.legacyData[i].CkIdStat = make(map[int64]map[int]bool)
-								kv.legacyData[i].KVdata = make(map[string]string)
-								for ck, id := range kv.shardData[i].CkLastId {
-									kv.legacyData[i].CkLastId[ck] = id
-								}
-								for ck, ckStat := range kv.shardData[i].CkIdStat {
-									kv.legacyData[i].CkIdStat[ck] = make(map[int]bool)
-									for id, stat := range ckStat {
-										kv.legacyData[i].CkIdStat[ck][id] = stat
-									}
-								}
-								for key, value := range kv.shardData[i].KVdata {
-									kv.legacyData[i].KVdata[key] = value
-								}
+								kv.legacyData[i].CkLastId = kv.shardData[i].CkLastId
+								kv.legacyData[i].CkIdStat = kv.shardData[i].CkIdStat
+								kv.legacyData[i].KVdata = kv.shardData[i].KVdata
+								// kv.legacyData[i].CkLastId = make(map[int64]int)
+								// kv.legacyData[i].CkIdStat = make(map[int64]map[int]bool)
+								// kv.legacyData[i].KVdata = make(map[string]string)
+								// for ck, id := range kv.shardData[i].CkLastId {
+								// 	kv.legacyData[i].CkLastId[ck] = id
+								// }
+								// for ck, ckStat := range kv.shardData[i].CkIdStat {
+								// 	kv.legacyData[i].CkIdStat[ck] = make(map[int]bool)
+								// 	for id, stat := range ckStat {
+								// 		kv.legacyData[i].CkIdStat[ck][id] = stat
+								// 	}
+								// }
+								// for key, value := range kv.shardData[i].KVdata {
+								// 	kv.legacyData[i].KVdata[key] = value
+								// }
+								kv.shardData[i].CkLastId = nil
+								kv.shardData[i].CkIdStat = nil
+								kv.shardData[i].KVdata = nil
 							}
 							kv.shardData[i].ConfigNum++
 						} else if gid == kv.gid {
