@@ -459,8 +459,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if j < len(entries) {
 			// wierd RPC race issue
 			prelog := rf.log[:i]
-			tmplog := append(prelog, entries[j:]...)
-			rf.log = tmplog
+			for k := j; k >= 0 && k < len(entries); k++ {
+				tmplog := entries[k]
+				prelog = append(prelog, tmplog)
+			}
+			rf.log = prelog
 			i += len(args.Entries) - j
 		}
 
