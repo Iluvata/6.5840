@@ -415,14 +415,14 @@ func (kv *ShardKV) coordinator() {
 			} else if op == "ClearLegacy" {
 				shardNum := cmd.Shard.ShardNum
 				configNum := cmd.Shard.ConfigNum
-				kv.shardRWLock[shardNum].RLock()
+				kv.shardRWLock[shardNum].Lock()
 				if kv.legacyData[shardNum].ConfigNum == configNum {
 					kv.legacyData[shardNum].ConfigNum = 0
 					kv.legacyData[shardNum].CkLastId = nil
 					kv.legacyData[shardNum].CkIdStat = nil
 					kv.legacyData[shardNum].KVdata = nil
 				}
-				kv.shardRWLock[cmd.Shard.ShardNum].RUnlock()
+				kv.shardRWLock[cmd.Shard.ShardNum].Unlock()
 			} else {
 				// Get, Put or Append
 				shard := key2shard(cmd.Key)
