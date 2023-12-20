@@ -59,3 +59,11 @@ type TransferShardReply struct {
 	Err   Err
 	Shard ShardData
 }
+
+type DeleteLegacyShardArgs struct {
+	ShardNum  int
+	ConfigNum int
+}
+
+type DeleteLegacyShardReply struct {
+}

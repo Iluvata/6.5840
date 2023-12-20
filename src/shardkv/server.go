@@ -31,7 +31,7 @@ type Op struct {
 	Value        string
 	Ck           int64
 	CkIndex      int
-	ConfigNum    int
+	ConfigNum    int // shared by NewConfig and Get, PutAppend
 	Shard        ShardData
 	ConfigShards [shardctrler.NShards]int
 	ConfigGroups map[int][]string
@@ -107,14 +107,19 @@ func (kv *ShardKV) TransferShard(args *TransferShardArgs, reply *TransferShardRe
 }
 
 func (kv *ShardKV) requestTransferShard(servers []string, shardNum int, configNum int) {
-	args := TransferShardArgs{}
-	args.ConfigNum = configNum
-	args.ShardNum = shardNum
 	for !kv.killed() {
 		// check whether done applying
 		kv.shardRWLock[shardNum].RLock()
 		if kv.shardData[shardNum].ConfigNum > configNum {
 			kv.shardRWLock[shardNum].RUnlock()
+			for si := 0; si < len(servers); si++ {
+				srv := kv.make_end(servers[si])
+				var args DeleteLegacyShardArgs
+				args.ConfigNum = configNum
+				args.ShardNum = shardNum
+				var reply DeleteLegacyShardReply
+				srv.Call("ShardKV.DeleteLegacyShard", &args, &reply)
+			}
 			return
 		}
 		kv.shardRWLock[shardNum].RUnlock()
@@ -133,6 +138,9 @@ func (kv *ShardKV) requestTransferShard(servers []string, shardNum int, configNu
 		}
 		for si := 0; si < len(servers); si++ {
 			srv := kv.make_end(servers[si])
+			var args TransferShardArgs
+			args.ConfigNum = configNum
+			args.ShardNum = shardNum
 			var reply TransferShardReply
 			ok := srv.Call("ShardKV.TransferShard", &args, &reply)
 			if ok && reply.Err == OK {
@@ -147,6 +155,14 @@ func (kv *ShardKV) requestTransferShard(servers []string, shardNum int, configNu
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+func (kv *ShardKV) DeleteLegacyShard(args *DeleteLegacyShardArgs, reply *DeleteLegacyShardReply) {
+	op := Op{}
+	op.Op = "ClearLegacy"
+	op.Shard.ShardNum = args.ShardNum
+	op.Shard.ConfigNum = args.ConfigNum
+	kv.rf.Start(op)
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
@@ -336,21 +352,7 @@ func (kv *ShardKV) coordinator() {
 								kv.legacyData[i].CkLastId = kv.shardData[i].CkLastId
 								kv.legacyData[i].CkIdStat = kv.shardData[i].CkIdStat
 								kv.legacyData[i].KVdata = kv.shardData[i].KVdata
-								// kv.legacyData[i].CkLastId = make(map[int64]int)
-								// kv.legacyData[i].CkIdStat = make(map[int64]map[int]bool)
-								// kv.legacyData[i].KVdata = make(map[string]string)
-								// for ck, id := range kv.shardData[i].CkLastId {
-								// 	kv.legacyData[i].CkLastId[ck] = id
-								// }
-								// for ck, ckStat := range kv.shardData[i].CkIdStat {
-								// 	kv.legacyData[i].CkIdStat[ck] = make(map[int]bool)
-								// 	for id, stat := range ckStat {
-								// 		kv.legacyData[i].CkIdStat[ck][id] = stat
-								// 	}
-								// }
-								// for key, value := range kv.shardData[i].KVdata {
-								// 	kv.legacyData[i].KVdata[key] = value
-								// }
+
 								kv.shardData[i].CkLastId = nil
 								kv.shardData[i].CkIdStat = nil
 								kv.shardData[i].KVdata = nil
@@ -392,7 +394,6 @@ func (kv *ShardKV) coordinator() {
 					kv.shardData[shardNum].ConfigNum++
 					kv.shardRWLock[shardNum].Unlock()
 					kv.shardData[shardNum].Alive = true
-					// kv.shardData[shardNum].ShardNum = cmd.Shard.ShardNum
 					kv.shardData[shardNum].CkLastId = make(map[int64]int)
 					kv.shardData[shardNum].CkIdStat = make(map[int64]map[int]bool)
 					kv.shardData[shardNum].KVdata = make(map[string]string)
@@ -411,6 +412,17 @@ func (kv *ShardKV) coordinator() {
 				} else {
 					kv.shardRWLock[shardNum].Unlock()
 				}
+			} else if op == "ClearLegacy" {
+				shardNum := cmd.Shard.ShardNum
+				configNum := cmd.Shard.ConfigNum
+				kv.shardRWLock[shardNum].RLock()
+				if kv.legacyData[shardNum].ConfigNum == configNum {
+					kv.legacyData[shardNum].ConfigNum = 0
+					kv.legacyData[shardNum].CkLastId = nil
+					kv.legacyData[shardNum].CkIdStat = nil
+					kv.legacyData[shardNum].KVdata = nil
+				}
+				kv.shardRWLock[cmd.Shard.ShardNum].RUnlock()
 			} else {
 				// Get, Put or Append
 				shard := key2shard(cmd.Key)
